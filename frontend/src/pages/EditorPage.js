@@ -46,6 +46,13 @@ export default function EditorPage({ user }) {
     fetchComments();
   }, [documentId]);
 
+  useEffect(() => {
+    // Calculate word count
+    const text = content.replace(/<[^>]*>/g, '').trim();
+    const words = text.split(/\s+/).filter(word => word.length > 0);
+    setWordCount(words.length);
+  }, [content]);
+
   const fetchDocument = async () => {
     try {
       const response = await axios.get(`${API}/documents/${documentId}`, getAuthHeaders());
