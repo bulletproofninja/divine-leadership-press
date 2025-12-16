@@ -94,6 +94,26 @@ export default function Dashboard({ user, onLogout }) {
     doc.title.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
+  const handleDeleteDocument = async () => {
+    if (!documentToDelete) return;
+
+    try {
+      await axios.delete(`${API}/documents/${documentToDelete.id}`, getAuthHeaders());
+      toast.success('Document deleted');
+      setDocuments(documents.filter(doc => doc.id !== documentToDelete.id));
+      setDeleteDialogOpen(false);
+      setDocumentToDelete(null);
+    } catch (error) {
+      toast.error('Failed to delete document');
+    }
+  };
+
+  const openDeleteDialog = (doc, e) => {
+    e.stopPropagation();
+    setDocumentToDelete(doc);
+    setDeleteDialogOpen(true);
+  };
+
   const formatDate = (dateString) => {
     const date = new Date(dateString);
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
