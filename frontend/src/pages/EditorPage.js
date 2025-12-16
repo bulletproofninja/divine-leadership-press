@@ -331,6 +331,16 @@ export default function EditorPage({ user }) {
                   </TabsTrigger>
                 </TabsList>
 
+                <div className="mt-4 p-3 bg-accent/30 rounded-sm border">
+                  <h4 className="text-xs font-semibold mb-2">Quick Tips</h4>
+                  <ul className="text-xs text-muted-foreground space-y-1">
+                    <li>• Use H1-H6 for chapter titles</li>
+                    <li>• Toggle Track Changes to monitor edits</li>
+                    <li>• Apply style templates for consistency</li>
+                    <li>• Preview before export</li>
+                  </ul>
+                </div>
+
                 <TabsContent value="metadata" className="space-y-4 mt-4">
                   <div>
                     <Label>Format</Label>
