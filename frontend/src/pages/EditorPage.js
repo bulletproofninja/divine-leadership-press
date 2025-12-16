@@ -238,13 +238,69 @@ export default function EditorPage({ user }) {
       <div className="container mx-auto px-4 py-6 max-w-7xl">
         <div className="grid lg:grid-cols-[1fr,320px] gap-6">
           {/* Main Editor Area */}
-          <div className="space-y-6">
+          <div className="space-y-4">
+            {/* Formatting Toolbar */}
+            <Card data-testid="formatting-toolbar" className="p-4 bg-card/50 backdrop-blur-sm">
+              <div className="flex items-center justify-between gap-4 flex-wrap">
+                <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-2">
+                    <Label className="text-sm font-medium whitespace-nowrap">Style Template:</Label>
+                    <Select value={styleTemplate} onValueChange={setStyleTemplate}>
+                      <SelectTrigger data-testid="style-template-select" className="w-[180px] rounded-sm">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="default">Default</SelectItem>
+                        <SelectItem value="novel">Novel</SelectItem>
+                        <SelectItem value="academic">Academic</SelectItem>
+                        <SelectItem value="magazine">Magazine</SelectItem>
+                        <SelectItem value="poetry">Poetry</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <Separator orientation="vertical" className="h-6" />
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="track-changes"
+                      data-testid="track-changes-toggle"
+                      checked={trackChanges}
+                      onChange={(e) => setTrackChanges(e.target.checked)}
+                      className="rounded"
+                    />
+                    <Label htmlFor="track-changes" className="text-sm cursor-pointer">
+                      Track Changes
+                    </Label>
+                  </div>
+                </div>
+                <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                  <span data-testid="word-count">Words: <strong className="text-foreground">{wordCount}</strong></span>
+                  <span>Characters: <strong className="text-foreground">{content.replace(/<[^>]*>/g, '').length}</strong></span>
+                </div>
+              </div>
+            </Card>
+
             {showPreview ? (
-              <Card data-testid="preview-panel" className="p-8 bg-card/50 backdrop-blur-sm">
-                <div className="prose prose-lg max-w-none font-editor" dangerouslySetInnerHTML={{ __html: content }} />
+              <Card data-testid="preview-panel" className="p-8 bg-card/50 backdrop-blur-sm min-h-[600px]">
+                <div 
+                  className={`prose prose-lg max-w-none font-editor ${
+                    styleTemplate === 'novel' ? 'prose-headings:font-heading' :
+                    styleTemplate === 'academic' ? 'prose-headings:font-mono' :
+                    styleTemplate === 'magazine' ? 'prose-p:columns-2' :
+                    styleTemplate === 'poetry' ? 'prose-p:text-center' : ''
+                  }`}
+                  dangerouslySetInnerHTML={{ __html: content }} 
+                />
               </Card>
             ) : (
               <Card data-testid="editor-panel" className="p-6 bg-card/50 backdrop-blur-sm">
+                {trackChanges && (
+                  <div className="mb-4 p-3 bg-primary/10 border border-primary/20 rounded-sm">
+                    <p className="text-sm text-primary font-medium">
+                      ✓ Track Changes is ON - All edits will be saved in version history
+                    </p>
+                  </div>
+                )}
                 <ReactQuill
                   theme="snow"
                   value={content}
