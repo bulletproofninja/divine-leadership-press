@@ -36,6 +36,9 @@ export default function EditorPage({ user }) {
   const [activeTab, setActiveTab] = useState('editor');
   const [newComment, setNewComment] = useState('');
   const [showPreview, setShowPreview] = useState(false);
+  const [wordCount, setWordCount] = useState(0);
+  const [trackChanges, setTrackChanges] = useState(false);
+  const [styleTemplate, setStyleTemplate] = useState('default');
 
   useEffect(() => {
     fetchDocument();
