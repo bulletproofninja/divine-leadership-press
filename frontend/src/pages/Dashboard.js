@@ -29,6 +29,8 @@ export default function Dashboard({ user, onLogout }) {
   const [newDocTitle, setNewDocTitle] = useState('');
   const [newDocFormat, setNewDocFormat] = useState('6x9');
   const [uploading, setUploading] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [documentToDelete, setDocumentToDelete] = useState(null);
 
   useEffect(() => {
     fetchDocuments();
