@@ -186,6 +186,7 @@ export default function EditorPage({ user }) {
             >
               <ArrowLeft className="h-4 w-4" />
             </Button>
+            <img src={LOGO_URL} alt="Divine Leadership Press" className="h-8 w-8 flex-shrink-0" />
             <Input
               data-testid="document-title-input"
               value={title}
