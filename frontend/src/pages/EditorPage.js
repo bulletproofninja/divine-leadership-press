@@ -460,6 +460,28 @@ export default function EditorPage({ user }) {
               </Tabs>
             </Card>
 
+            {/* Format Preview */}
+            <Card data-testid="format-preview-panel" className="p-4 bg-card/50 backdrop-blur-sm">
+              <h3 className="text-sm font-heading font-semibold mb-3 flex items-center gap-2">
+                <FileType className="h-4 w-4" />
+                Format Preview
+              </h3>
+              <div className="space-y-2 text-xs">
+                <div className="p-2 bg-accent/20 rounded border">
+                  <div className="font-medium mb-1">Current: {document?.format}</div>
+                  <div className="text-muted-foreground">
+                    {document?.format === '6x9' && 'Standard novel size (152×229mm)'}
+                    {document?.format === '5x8' && 'Digest size (127×203mm)'}
+                    {document?.format === '8.5x11' && 'Magazine size (216×279mm)'}
+                    {document?.format === 'epub' && 'Digital ebook format'}
+                  </div>
+                </div>
+                <div className="text-muted-foreground">
+                  Approx. pages: <strong className="text-foreground">{Math.ceil(wordCount / 250)}</strong>
+                </div>
+              </div>
+            </Card>
+
             {/* Export & Publish */}
             <Card data-testid="export-panel" className="p-4 bg-card/50 backdrop-blur-sm">
               <h3 className="text-sm font-heading font-semibold mb-3">Export & Publish</h3>
@@ -472,7 +494,7 @@ export default function EditorPage({ user }) {
                   onClick={() => handleExport('pdf')}
                 >
                   <Download className="h-4 w-4 mr-2" />
-                  Export PDF
+                  Export PDF ({document?.format})
                 </Button>
                 <Button
                   data-testid="export-epub-btn"
