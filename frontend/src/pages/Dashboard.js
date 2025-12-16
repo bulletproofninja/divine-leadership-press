@@ -253,9 +253,18 @@ export default function Dashboard({ user, onLogout }) {
               >
                 <Card
                   data-testid={`document-card-${doc.id}`}
-                  className="p-6 hover:shadow-lg transition-all duration-300 cursor-pointer border bg-card/50 backdrop-blur-sm h-full flex flex-col hover:scale-[1.02]"
+                  className="p-6 hover:shadow-lg transition-all duration-300 cursor-pointer border bg-card/50 backdrop-blur-sm h-full flex flex-col hover:scale-[1.02] relative group"
                   onClick={() => navigate(`/editor/${doc.id}`)}
                 >
+                  <Button
+                    data-testid={`delete-document-btn-${doc.id}`}
+                    variant="ghost"
+                    size="sm"
+                    className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity rounded-sm h-8 w-8 p-0 hover:bg-destructive/10 hover:text-destructive"
+                    onClick={(e) => openDeleteDialog(doc, e)}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
                   <div className="flex items-start justify-between mb-4">
                     <div className="p-2 rounded-md bg-primary/10">
                       <File className="h-6 w-6 text-primary" />
