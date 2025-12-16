@@ -1,0 +1,208 @@
+{
+  "identity": {
+    "name": "Divine Leadership Press",
+    "archetype": "The Modern Classic",
+    "vibe": "Hundred-year-old publishing house meets Silicon Valley precision. Heritage, Authority, Craftsmanship, Innovation.",
+    "emotional_tone": "Trustworthy, Elegant, Focused, Professional, Literary."
+  },
+  "design_philosophy": {
+    "core_principles": [
+      "Fusion over Imitation: Mix 19th-century book design with 21st-century SaaS utility.",
+      "Content is King: The interface recedes; the manuscript takes center stage.",
+      "Tactile Digitalism: Use texture (grain, paper) and lighting to make the screen feel like a physical object.",
+      "Negative Space: Luxurious margins. If it feels empty, add more space, not more content."
+    ],
+    "anti_patterns": [
+      "No generic 'SaaS Blue' or 'Bootstrap' layouts.",
+      "No 'Inter' for headings. Use characterful Serifs.",
+      "No flat, soulless gradients. Use noise/grain or deep, rich solids.",
+      "No clutter. Every element must earn its place."
+    ]
+  },
+  "typography": {
+    "strategy": "The Old Money Tech",
+    "fonts": {
+      "headings": {
+        "family": "Playfair Display",
+        "weights": ["400", "600", "700"],
+        "usage": "All H1-H3 headings, Hero text, Feature titles.",
+        "fallback": "serif"
+      },
+      "body": {
+        "family": "Manrope",
+        "weights": ["400", "500", "600"],
+        "usage": "UI elements, buttons, navigation, dashboard data.",
+        "fallback": "sans-serif"
+      },
+      "editor": {
+        "family": "EB Garamond",
+        "weights": ["400", "500", "600", "700"],
+        "usage": "The actual manuscript writing area. Essential for the 'book' feel.",
+        "fallback": "serif"
+      },
+      "mono": {
+        "family": "JetBrains Mono",
+        "usage": "Metadata, ISBNs, technical specs.",
+        "fallback": "monospace"
+      }
+    },
+    "rules": [
+      "Headings > 32px must use tracking-tight (-0.02em).",
+      "Overlines/Labels must be Uppercase + tracking-widest (0.2em) + text-xs.",
+      "Editor text should have relaxed line-height (1.8) for readability."
+    ]
+  },
+  "colors": {
+    "palette_name": "The Gilded Ink",
+    "mode_strategy": "Smart Hybrid (Light for Writing/Reading, Dark for Dashboard/Focus)",
+    "light_theme": {
+      "background": "0 0% 98%", 
+      "foreground": "240 10% 3.9%",
+      "card": "0 0% 100%",
+      "card_foreground": "240 10% 3.9%",
+      "popover": "0 0% 100%",
+      "popover_foreground": "240 10% 3.9%",
+      "primary": "35 80% 30%", 
+      "primary_foreground": "35 100% 98%",
+      "secondary": "240 4.8% 95.9%",
+      "secondary_foreground": "240 5.9% 10%",
+      "muted": "240 4.8% 95.9%",
+      "muted_foreground": "240 3.8% 46.1%",
+      "accent": "35 30% 90%",
+      "accent_foreground": "240 5.9% 10%",
+      "destructive": "0 84.2% 60.2%",
+      "destructive_foreground": "0 0% 98%",
+      "border": "240 5.9% 90%",
+      "input": "240 5.9% 90%",
+      "ring": "35 80% 30%"
+    },
+    "dark_theme": {
+      "background": "240 10% 3.9%",
+      "foreground": "0 0% 98%",
+      "card": "240 10% 3.9%",
+      "card_foreground": "0 0% 98%",
+      "popover": "240 10% 3.9%",
+      "popover_foreground": "0 0% 98%",
+      "primary": "35 80% 50%",
+      "primary_foreground": "240 5.9% 10%",
+      "secondary": "240 3.7% 15.9%",
+      "secondary_foreground": "0 0% 98%",
+      "muted": "240 3.7% 15.9%",
+      "muted_foreground": "240 5% 64.9%",
+      "accent": "240 3.7% 15.9%",
+      "accent_foreground": "0 0% 98%",
+      "destructive": "0 62.8% 30.6%",
+      "destructive_foreground": "0 0% 98%",
+      "border": "240 3.7% 15.9%",
+      "input": "240 3.7% 15.9%",
+      "ring": "35 80% 50%"
+    },
+    "usage_notes": [
+      "Primary color is a deep Amber/Bronze (#B45309 in hex approx), evoking leather bindings and gold leaf.",
+      "Background in light mode is NOT pure white. Use a very subtle warm off-white to mimic paper.",
+      "Text is never pure black. Use #1A1A1A or deep charcoal."
+    ]
+  },
+  "layout": {
+    "spacing_system": "Generous. Use p-8, p-12, p-16. Don't cram.",
+    "grid_strategy": {
+      "dashboard": "Bento Grid (Mode B). Dense, data-rich but with elegant borders.",
+      "marketing": "Tetris Grid (Mode A). Asymmetrical, artistic, overlapping elements.",
+      "editor": "Focus Column. Single central column, max-width-3xl, massive side margins."
+    },
+    "border_radius": {
+      "default": "rounded-md (6px)",
+      "buttons": "rounded-sm (2px) - Sharp, precise feel.",
+      "cards": "rounded-lg (8px)"
+    }
+  },
+  "components": {
+    "buttons": {
+      "style": "Sharp or slightly rounded. No pill shapes for primary actions.",
+      "animation": "Hover: slight lift (-1px) + shadow-md. Active: scale-95."
+    },
+    "cards": {
+      "style": "Flat with 1px border. Minimal shadow. 'Tracing Beam' effect on hover for feature cards.",
+      "background": "bg-card/50 backdrop-blur-sm (Glassmorphism Lite)."
+    },
+    "inputs": {
+      "style": "Underlined or minimal border. No heavy backgrounds.",
+      "focus": "border-primary ring-0 transition-colors duration-300."
+    },
+    "navigation": {
+      "style": "Sticky glassmorphism header. Simple text links with animated underlines."
+    }
+  },
+  "visual_enhancers": {
+    "textures": "Use subtle noise/grain overlays on backgrounds to kill digital flatness.",
+    "shadows": "Layered shadows. shadow-sm + shadow-xl for depth.",
+    "glassmorphism": "Use backdrop-blur-md with border-white/10 for overlays and sticky headers.",
+    "motion": {
+      "library": "framer-motion",
+      "transitions": "Smooth, ease-out-quart. Duration 0.4s.",
+      "page_load": "Staggered fade-in + slide-up for content."
+    }
+  },
+  "media": {
+    "image_style": "Cinematic, high-contrast, warm tones. Focus on details (hands, paper, ink).",
+    "image_urls": {
+      "hero": [
+        {
+          "url": "https://images.unsplash.com/photo-1672396306113-4641c9a9c97e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Njl8MHwxfHNlYXJjaHwxfHxhbnRpcXVlJTIwbGlicmFyeSUyMGJvb2tzJTIwYWVzdGhldGljfGVufDB8fHx8MTc2NTg0NTI2M3ww&ixlib=rb-4.1.0&q=85",
+          "description": "Open book on wooden table - Hero Background",
+          "category": "hero"
+        },
+        {
+          "url": "https://images.unsplash.com/photo-1692742593581-a78e2f5e4060?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Njl8MHwxfHNlYXJjaHwyfHxhbnRpcXVlJTIwbGlicmFyeSUyMGJvb2tzJTIwYWVzdGhldGljfGVufDB8fHx8MTc2NTg0NTI2M3ww&ixlib=rb-4.1.0&q=85",
+          "description": "Stack of books - Feature Section",
+          "category": "feature"
+        }
+      ],
+      "workspace": [
+        {
+          "url": "https://images.unsplash.com/photo-1654785419449-7f0a9383a4fe?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NzZ8MHwxfHNlYXJjaHwxfHxtaW5pbWFsaXN0JTIwd29ya3NwYWNlJTIwd3JpdGluZyUyMGF1dGhvcnxlbnwwfHx8fDE3NjU4NDUyNjZ8MA&ixlib=rb-4.1.0&q=85",
+          "description": "Minimalist desk with coffee - User Dashboard",
+          "category": "dashboard"
+        },
+        {
+          "url": "https://images.unsplash.com/photo-1705417272217-490f4511abeb?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NzZ8MHwxfHNlYXJjaHwyfHxtaW5pbWFsaXN0JTIwd29ya3NwYWNlJTIwd3JpdGluZyUyMGF1dGhvcnxlbnwwfHx8fDE3NjU4NDUyNjZ8MA&ixlib=rb-4.1.0&q=85",
+          "description": "Laptop on wooden desk - Writing Interface",
+          "category": "editor"
+        }
+      ],
+      "details": [
+        {
+          "url": "https://images.unsplash.com/photo-1581508512961-0e3b9524db40?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1ODF8MHwxfHNlYXJjaHwxfHxwcmludGluZyUyMHByZXNzJTIwaW5rJTIwZGV0YWlscyUyMG1hY3JvfGVufDB8fHx8MTc2NTg0NTI2N3ww&ixlib=rb-4.1.0&q=85",
+          "description": "Old print press details - About/History Section",
+          "category": "about"
+        }
+      ]
+    }
+  },
+  "3d_libraries": {
+    "primary": "react-three-fiber",
+    "usage": "Interactive 3D Book Preview in Hero or Export section. Allow user to rotate the book.",
+    "secondary": "framer-motion",
+    "usage": "Page transitions, element entry animations."
+  },
+  "instructions_to_main_agent": [
+    "1. INSTALL FONTS: Add '@fontsource/playfair-display', '@fontsource/manrope', '@fontsource/eb-garamond' to package.json.",
+    "2. UPDATE TAILWIND: Configure the font families in tailwind.config.js as specified in typography section.",
+    "3. UPDATE CSS: Replace the root variables in index.css with the 'colors' values provided above.",
+    "4. CREATE LAYOUTS: Build the 'Bento Grid' for the dashboard and 'Focus Column' for the editor.",
+    "5. USE IMAGES: Use the provided image URLs for placeholders. DO NOT use generic placeholders.",
+    "6. CUSTOMIZE SHADCN: Override default rounded-md with rounded-sm for buttons to match the 'Sharp/Precise' aesthetic.",
+    "7. ADD TEXTURE: Create a global 'noise' overlay component using a transparent PNG or CSS pattern.",
+    "8. DATA-TESTID: Ensure every interactive element has a data-testid attribute."
+  ],
+  "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": [
+    "Avoid 'AI Slop' - no generic centered layouts.",
+    "Dark colors must be solid or subtle noise, NO gradients.",
+    "Use glassmorphism with backdrop-blur-xl.",
+    "No 'transition: all'. Animate specific properties.",
+    "No 'text-align: center' on the App container.",
+    "Use 'sonner' for toasts.",
+    "Export components as named exports.",
+    "Export pages as default exports."
+  ]
+}
