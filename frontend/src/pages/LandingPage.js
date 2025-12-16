@@ -11,6 +11,7 @@ import { toast } from 'sonner';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
+const LOGO_URL = 'https://customer-assets.emergentagent.com/job_book-press/artifacts/gwdawx4q_Divine%20Leadership%20Press%20Emblem%281%29.png';
 
 export default function LandingPage({ onLogin }) {
   const [showAuth, setShowAuth] = useState(false);
@@ -77,36 +78,39 @@ export default function LandingPage({ onLogin }) {
   ];
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen" style={{ background: 'linear-gradient(135deg, hsl(210, 100%, 12%) 0%, hsl(210, 80%, 18%) 100%)' }}>
       {/* Hero Section */}
       <div className="relative overflow-hidden">
-        <div
-          className="absolute inset-0 z-0"
-          style={{
-            backgroundImage: 'url(https://images.unsplash.com/photo-1672396306113-4641c9a9c97e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Njl8MHwxfHNlYXJjaHwxfHxhbnRpcXVlJTIwbGlicmFyeSUyMGJvb2tzJTIwYWVzdGhldGljfGVufDB8fHx8MTc2NTg0NTI2M3ww&ixlib=rb-4.1.0&q=85)',
-            backgroundSize: 'cover',
-            backgroundPosition: 'center',
-            filter: 'brightness(0.4)'
-          }}
-        />
+        <div className="absolute inset-0 z-0 opacity-10">
+          <div
+            className="w-full h-full"
+            style={{
+              backgroundImage: 'url(https://images.unsplash.com/photo-1672396306113-4641c9a9c97e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Njl8MHwxfHNlYXJjaHwxfHxhbnRpcXVlJTIwbGlicmFyeSUyMGJvb2tzJTIwYWVzdGhldGljfGVufDB8fHx8MTc2NTg0NTI2M3ww&ixlib=rb-4.1.0&q=85)',
+              backgroundSize: 'cover',
+              backgroundPosition: 'center'
+            }}
+          />
+        </div>
         <div className="relative z-10 container mx-auto px-4 py-24 lg:py-32">
           <div className="max-w-4xl mx-auto text-center">
             <motion.div
               initial={{ opacity: 0, y: 30 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.6 }}
+              className="flex flex-col items-center"
             >
-              <h1 className="text-5xl sm:text-6xl lg:text-7xl font-heading font-bold text-white mb-6 tracking-tightest">
+              <img src={LOGO_URL} alt="Divine Leadership Press" className="w-32 h-32 mb-6" />
+              <h1 className="text-5xl sm:text-6xl lg:text-7xl font-heading font-bold mb-6 tracking-tightest" style={{ color: 'hsl(40, 30%, 92%)' }}>
                 Divine Leadership Press
               </h1>
-              <p className="text-lg sm:text-xl text-gray-200 mb-8 font-body max-w-2xl mx-auto">
+              <p className="text-lg sm:text-xl mb-8 font-body max-w-2xl mx-auto" style={{ color: 'hsl(40, 20%, 85%)' }}>
                 Professional book publishing and formatting platform. Transform your manuscripts into beautifully formatted books ready for print and digital distribution.
               </p>
               <div className="flex flex-col sm:flex-row gap-4 justify-center items-center">
                 <Button
                   data-testid="get-started-btn"
                   size="lg"
-                  className="rounded-sm text-base px-8 py-6 hover:scale-105 transition-transform duration-300"
+                  className="rounded-sm text-base px-8 py-6 hover:scale-105 transition-transform duration-300 bg-[hsl(40,30%,92%)] text-[hsl(210,100%,12%)] hover:bg-[hsl(40,35%,88%)]"
                   onClick={() => setShowAuth(true)}
                 >
                   <BookOpen className="mr-2 h-5 w-5" />
@@ -116,7 +120,7 @@ export default function LandingPage({ onLogin }) {
                   data-testid="learn-more-btn"
                   variant="outline"
                   size="lg"
-                  className="rounded-sm text-base px-8 py-6 bg-white/10 border-white/20 text-white hover:bg-white/20 hover:scale-105 transition-transform duration-300"
+                  className="rounded-sm text-base px-8 py-6 border-[hsl(40,30%,92%)] text-[hsl(40,30%,92%)] hover:bg-[hsl(40,30%,92%)]/10 hover:scale-105 transition-transform duration-300"
                   onClick={() => document.getElementById('features').scrollIntoView({ behavior: 'smooth' })}
                 >
                   Learn More
@@ -128,7 +132,7 @@ export default function LandingPage({ onLogin }) {
       </div>
 
       {/* Features Section */}
-      <div id="features" className="py-20 px-4">
+      <div id="features" className="py-20 px-4 bg-background">
         <div className="container mx-auto max-w-7xl">
           <motion.div
             initial={{ opacity: 0 }}
@@ -167,7 +171,7 @@ export default function LandingPage({ onLogin }) {
       </div>
 
       {/* CTA Section */}
-      <div className="py-20 px-4 bg-primary/5">
+      <div className="py-20 px-4" style={{ background: 'hsl(210, 100%, 15%)' }}>
         <div className="container mx-auto max-w-4xl text-center">
           <motion.div
             initial={{ opacity: 0 }}
@@ -175,16 +179,16 @@ export default function LandingPage({ onLogin }) {
             transition={{ duration: 0.6 }}
             viewport={{ once: true }}
           >
-            <h2 className="text-3xl lg:text-5xl font-heading font-bold mb-6 tracking-tight">
+            <h2 className="text-3xl lg:text-5xl font-heading font-bold mb-6 tracking-tight" style={{ color: 'hsl(40, 30%, 92%)' }}>
               Ready to Publish Your Book?
             </h2>
-            <p className="text-lg text-muted-foreground mb-8 font-body">
+            <p className="text-lg mb-8 font-body" style={{ color: 'hsl(40, 20%, 80%)' }}>
               Join authors and publishers who trust Divine Leadership Press
             </p>
             <Button
               data-testid="cta-get-started-btn"
               size="lg"
-              className="rounded-sm text-base px-8 py-6 hover:scale-105 transition-transform duration-300"
+              className="rounded-sm text-base px-8 py-6 hover:scale-105 transition-transform duration-300 bg-[hsl(40,30%,92%)] text-[hsl(210,100%,12%)] hover:bg-[hsl(40,35%,88%)]"
               onClick={() => setShowAuth(true)}
             >
               Get Started Now
@@ -203,11 +207,12 @@ export default function LandingPage({ onLogin }) {
             onClick={(e) => e.stopPropagation()}
           >
             <Card data-testid="auth-modal" className="w-full max-w-md p-8 bg-card/95 backdrop-blur-md">
-              <div className="mb-6">
+              <div className="mb-6 flex flex-col items-center">
+                <img src={LOGO_URL} alt="Divine Leadership Press" className="w-20 h-20 mb-4" />
                 <h2 className="text-2xl font-heading font-bold mb-2">
                   {isLogin ? 'Welcome Back' : 'Create Account'}
                 </h2>
-                <p className="text-muted-foreground font-body">
+                <p className="text-muted-foreground font-body text-center">
                   {isLogin ? 'Sign in to your account' : 'Start your publishing journey'}
                 </p>
               </div>

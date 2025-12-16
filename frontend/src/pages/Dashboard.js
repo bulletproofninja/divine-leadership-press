@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Plus, FileText, Upload, LogOut, Search, Calendar, File, BookOpen } from 'lucide-react';
+import { Plus, FileText, Upload, LogOut, Search, Calendar, File } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Card } from '../components/ui/card';
@@ -10,10 +10,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import axios from 'axios';
 import { toast } from 'sonner';
 import { useNavigate } from 'react-router-dom';
-import mammoth from 'mammoth';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
+const LOGO_URL = 'https://customer-assets.emergentagent.com/job_book-press/artifacts/gwdawx4q_Divine%20Leadership%20Press%20Emblem%281%29.png';
 
 const getAuthHeaders = () => ({
   headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
@@ -102,8 +102,8 @@ export default function Dashboard({ user, onLogout }) {
       <header className="sticky top-0 z-40 border-b bg-card/95 backdrop-blur-md">
         <div className="container mx-auto px-4 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <BookOpen className="h-7 w-7 text-primary" />
-            <h1 className="text-2xl font-heading font-bold">Divine Leadership Press</h1>
+            <img src={LOGO_URL} alt="Divine Leadership Press" className="h-10 w-10" />
+            <h1 className="text-xl sm:text-2xl font-heading font-bold">Divine Leadership Press</h1>
           </div>
           <div className="flex items-center gap-4">
             <span className="text-sm font-body text-muted-foreground hidden sm:block">
