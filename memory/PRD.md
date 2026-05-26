@@ -28,9 +28,17 @@ A book publishing / writing application that allows users to upload a Word doc, 
 - [x] **AI Editorial Polish** powered by Claude Sonnet 4.5 (via Emergent universal key):
   - Tighten Prose, Improve Clarity, Back-Cover Blurb, Suggest Chapter Titles, Generate Synopsis
   - Apply / Copy / Discard preview flow in editor sidebar
-- [x] Backend pytest suites (22 tests total, 100% pass):
+- [x] **Editor's Desk — Full Copy-Edit Pass** (Claude Sonnet 4.5, structured JSON output):
+  - 11 issue categories: grammar, punctuation, spelling, run_on, comma_splice, passive, wordy, repetition, consistency, clarity, tone
+  - 3 severity levels (must_fix / suggested / stylistic) with colour-coded badges
+  - Per-issue Accept / Reject (HTML-level replace preserves inline formatting; text-walker fallback for cross-tag matches)
+  - Accept All / Reject All / severity filter
+  - Style-guide selector: Chicago Manual / AP / MLA / DLP House Style
+  - Local readability metrics: Flesch-Kincaid grade, avg sentence length, passive %, adverb density, longest-sentence callout
+- [x] Backend pytest suites (33 tests total, 100% pass):
   - `/app/backend/tests/test_upload_export.py` (14)
   - `/app/backend/tests/test_ai_editorial.py` (8)
+  - `/app/backend/tests/test_copyedit.py` (11)
 
 ## Architecture
 ```

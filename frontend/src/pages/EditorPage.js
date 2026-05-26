@@ -103,7 +103,7 @@ function CopyEditIssueCard({ issue, onAccept, onReject }) {
 export default function EditorPage({ user }) {
   const navigate = useNavigate();
   const { documentId } = useParams();
-  const [document, setDocument] = useState(null);
+  const [docMeta, setDocMeta] = useState(null);
   const [content, setContent] = useState('');
   const [title, setTitle] = useState('');
   const [metadata, setMetadata] = useState({});
@@ -159,7 +159,7 @@ export default function EditorPage({ user }) {
   const fetchDocument = async () => {
     try {
       const response = await axios.get(`${API}/documents/${documentId}`, getAuthHeaders());
-      setDocument(response.data);
+      setDocMeta(response.data);
       setContent(response.data.content);
       setTitle(response.data.title);
       setMetadata(response.data.metadata || {});
@@ -331,6 +331,7 @@ export default function EditorPage({ user }) {
 
   // Apply a single suggestion: replace `original` with `suggestion` in the matching paragraph.
   // We locate the paragraph (Nth <p>/<h*>/<li>/<blockquote>) and do a first-occurrence replace.
+  // HTML-level replace is tried first so inline formatting (<strong>, <em>, etc.) is preserved.
   const applyCopyEditFix = (issue) => {
     if (!issue) return false;
     const PARA_TAGS = ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'blockquote'];
@@ -342,14 +343,23 @@ export default function EditorPage({ user }) {
     const target = blocks[issue.paragraph_index];
     if (!target) return false;
 
+    // 1) Try a direct HTML-level replace first — preserves all inline formatting.
     const html = target.innerHTML;
-    // Escape regex special chars in original (but keep whitespace flexible)
+    if (html.includes(issue.original)) {
+      target.innerHTML = html.replace(issue.original, issue.suggestion);
+      setContent(root.innerHTML);
+      setCopyEditData((prev) => prev ? {
+        ...prev,
+        issues: prev.issues.filter((i) => i.id !== issue.id),
+      } : prev);
+      return true;
+    }
+
+    // 2) Fallback: walk text nodes and patch the first matching span.
+    //    Used when the issue.original is split across inline tags.
     const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const pattern = new RegExp(escapeRegex(issue.original).replace(/\s+/g, '\\s+'), '');
-
-    // Try direct text replace first
     if (pattern.test(target.textContent)) {
-      // Walk text nodes and replace in the first matching span
       const walker = window.document.createTreeWalker(target, NodeFilter.SHOW_TEXT, null);
       let node = walker.nextNode();
       let combined = '';
@@ -359,18 +369,14 @@ export default function EditorPage({ user }) {
         combined += node.nodeValue;
         node = walker.nextNode();
       }
-      const m = combined.match(pattern);
-      if (m) {
+      if (pattern.test(combined)) {
         const newCombined = combined.replace(pattern, issue.suggestion);
-        // Apply: put all text in first node, clear the rest
         if (nodes.length > 0) {
           nodes[0].nodeValue = newCombined;
           for (let i = 1; i < nodes.length; i += 1) {
             nodes[i].nodeValue = '';
           }
-          const newContent = root.innerHTML;
-          setContent(newContent);
-          // Remove issue from list
+          setContent(root.innerHTML);
           setCopyEditData((prev) => prev ? {
             ...prev,
             issues: prev.issues.filter((i) => i.id !== issue.id),
@@ -378,17 +384,6 @@ export default function EditorPage({ user }) {
           return true;
         }
       }
-    }
-
-    // Fall back to raw HTML replace if simple
-    if (html.includes(issue.original)) {
-      target.innerHTML = html.replace(issue.original, issue.suggestion);
-      setContent(root.innerHTML);
-      setCopyEditData((prev) => prev ? {
-        ...prev,
-        issues: prev.issues.filter((i) => i.id !== issue.id),
-      } : prev);
-      return true;
     }
     return false;
   };
@@ -638,7 +633,7 @@ export default function EditorPage({ user }) {
                 <TabsContent value="metadata" className="space-y-4 mt-4">
                   <div>
                     <Label>Format</Label>
-                    <Select value={document?.format} disabled>
+                    <Select value={docMeta?.format} disabled>
                       <SelectTrigger className="rounded-sm">
                         <SelectValue />
                       </SelectTrigger>
@@ -994,12 +989,12 @@ export default function EditorPage({ user }) {
               </h3>
               <div className="space-y-2 text-xs">
                 <div className="p-2 bg-accent/20 rounded border">
-                  <div className="font-medium mb-1">Current: {document?.format}</div>
+                  <div className="font-medium mb-1">Current: {docMeta?.format}</div>
                   <div className="text-muted-foreground">
-                    {document?.format === '6x9' && 'Standard novel size (152×229mm)'}
-                    {document?.format === '5x8' && 'Digest size (127×203mm)'}
-                    {document?.format === '8.5x11' && 'Magazine size (216×279mm)'}
-                    {document?.format === 'epub' && 'Digital ebook format'}
+                    {docMeta?.format === '6x9' && 'Standard novel size (152×229mm)'}
+                    {docMeta?.format === '5x8' && 'Digest size (127×203mm)'}
+                    {docMeta?.format === '8.5x11' && 'Magazine size (216×279mm)'}
+                    {docMeta?.format === 'epub' && 'Digital ebook format'}
                   </div>
                 </div>
                 <div className="text-muted-foreground">
