@@ -4,6 +4,7 @@ import { ArrowLeft, Save, Download, History, MessageSquare, Settings, Eye, Globe
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
+import { Switch } from '../components/ui/switch';
 import { Card } from '../components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
@@ -155,9 +156,12 @@ export default function EditorPage({ user }) {
   // Dictation
   const [isRecording, setIsRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
+  const [continuousMode, setContinuousMode] = useState(false);
+  const [dictationHistory, setDictationHistory] = useState([]);
   const mediaRecorderRef = useRef(null);
-  const audioChunksRef = useRef([]);
   const quillRef = useRef(null);
+  const continuousRef = useRef(false);
+  const mediaStreamRef = useRef(null);
 
   useEffect(() => {
     fetchDocument();
@@ -789,20 +793,95 @@ export default function EditorPage({ user }) {
   };
 
   // --- Dictation (Whisper) ---
-  const insertAtCursor = (text) => {
-    if (!text) return;
+  const insertAtCursor = (text, sourceId) => {
+    if (!text) return null;
     const editor = quillRef.current?.getEditor?.();
     if (editor) {
       const range = editor.getSelection(true);
       const index = range ? range.index : editor.getLength();
-      // Add a leading space if we're appending inside existing text
       const prefix = index > 0 ? ' ' : '';
-      editor.insertText(index, prefix + text, 'user');
-      editor.setSelection(index + prefix.length + text.length, 0);
+      const insertText = prefix + text;
+      editor.insertText(index, insertText, 'user');
+      editor.setSelection(index + insertText.length, 0);
       setContent(editor.root.innerHTML);
-    } else {
-      // Fallback if Quill ref not available — append at end
-      setContent((prev) => `${prev || ''}<p>${text.replace(/\n/g, '<br>')}</p>`);
+      return { index, length: insertText.length };
+    }
+    // Fallback append
+    setContent((prev) => `${prev || ''}<p>${text.replace(/\n/g, '<br>')}</p>`);
+    return null;
+  };
+
+  const transcribeBlob = async (blob, mime) => {
+    if (!blob || blob.size < 256) return null;
+    setTranscribing(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', blob, mime.includes('ogg') ? 'recording.ogg' : 'recording.webm');
+      const r = await axios.post(`${API}/transcribe`, fd, {
+        ...getAuthHeaders(),
+        headers: { ...getAuthHeaders().headers, 'Content-Type': 'multipart/form-data' },
+        timeout: 300000,
+      });
+      const text = (r.data?.text || '').trim();
+      if (!text) return null;
+      const chunkId = `dict_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      const range = insertAtCursor(text, chunkId);
+      setDictationHistory((prev) => [
+        {
+          id: chunkId,
+          text,
+          insertedAt: new Date().toISOString(),
+          index: range?.index ?? null,
+          length: range?.length ?? null,
+          undone: false,
+        },
+        ...prev,
+      ].slice(0, 30));
+      return text;
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Transcription failed', { duration: 7000 });
+      return null;
+    } finally {
+      setTranscribing(false);
+    }
+  };
+
+  const _startRecorderCycle = (stream) => {
+    const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus'
+      : MediaRecorder.isTypeSupported('audio/webm')
+        ? 'audio/webm'
+        : 'audio/ogg';
+    const chunks = [];
+    const recorder = new MediaRecorder(stream, { mimeType: mime });
+    mediaRecorderRef.current = recorder;
+
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) chunks.push(e.data);
+    };
+    recorder.onstop = async () => {
+      const blob = new Blob(chunks, { type: mime });
+      // Continue with next cycle BEFORE awaiting transcription so recording stays seamless
+      if (continuousRef.current && mediaStreamRef.current) {
+        _startRecorderCycle(mediaStreamRef.current);
+      } else {
+        // We're stopping for good — release the mic
+        if (mediaStreamRef.current) {
+          mediaStreamRef.current.getTracks().forEach((t) => t.stop());
+          mediaStreamRef.current = null;
+        }
+        setIsRecording(false);
+      }
+      if (blob.size > 256) {
+        await transcribeBlob(blob, mime);
+      }
+    };
+    recorder.start();
+    // In continuous mode, auto-stop after 30s; one-shot mode runs until user clicks Stop
+    if (continuousRef.current) {
+      window.setTimeout(() => {
+        if (recorder.state === 'recording') recorder.stop();
+      }, 30000);
     }
   };
 
@@ -814,64 +893,54 @@ export default function EditorPage({ user }) {
     }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-        ? 'audio/webm;codecs=opus'
-        : MediaRecorder.isTypeSupported('audio/webm')
-          ? 'audio/webm'
-          : 'audio/ogg';
-      const recorder = new MediaRecorder(stream, { mimeType: mime });
-      mediaRecorderRef.current = recorder;
-      audioChunksRef.current = [];
-
-      recorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) audioChunksRef.current.push(e.data);
-      };
-      recorder.onstop = async () => {
-        stream.getTracks().forEach((t) => t.stop());
-        const blob = new Blob(audioChunksRef.current, { type: mime });
-        audioChunksRef.current = [];
-        if (blob.size < 256) {
-          toast.error('Recording too short — try again');
-          setTranscribing(false);
-          return;
-        }
-        setTranscribing(true);
-        try {
-          const fd = new FormData();
-          fd.append('file', blob, mime.includes('ogg') ? 'recording.ogg' : 'recording.webm');
-          const r = await axios.post(`${API}/transcribe`, fd, {
-            ...getAuthHeaders(),
-            headers: { ...getAuthHeaders().headers, 'Content-Type': 'multipart/form-data' },
-            timeout: 300000,
-          });
-          const text = (r.data?.text || '').trim();
-          if (!text) {
-            toast.error('Nothing detected — try again');
-          } else {
-            insertAtCursor(text);
-            toast.success('Dictation added');
-          }
-        } catch (error) {
-          toast.error(error.response?.data?.detail || 'Transcription failed', { duration: 7000 });
-        } finally {
-          setTranscribing(false);
-        }
-      };
-
-      recorder.start();
+      mediaStreamRef.current = stream;
+      continuousRef.current = continuousMode;
       setIsRecording(true);
-      toast.success('Recording — click Stop when done');
+      _startRecorderCycle(stream);
+      toast.success(continuousMode
+        ? 'Continuous dictation — recording 30s segments'
+        : 'Recording — click Stop when done');
     } catch (error) {
       toast.error(error.message || 'Microphone permission denied');
     }
   };
 
   const stopDictation = () => {
+    continuousRef.current = false;
     const recorder = mediaRecorderRef.current;
     if (recorder && recorder.state === 'recording') {
       recorder.stop();
     }
-    setIsRecording(false);
+    // setIsRecording will flip to false inside the recorder.onstop handler
+  };
+
+  const undoDictationChunk = (chunk) => {
+    if (!chunk || chunk.undone) return;
+    const editor = quillRef.current?.getEditor?.();
+    if (!editor) {
+      toast.error('Editor not ready');
+      return;
+    }
+    // Search-and-remove first remaining occurrence (robust to later edits)
+    const fullText = editor.getText();
+    const idx = fullText.indexOf(chunk.text);
+    if (idx < 0) {
+      toast.error('Could not locate dictation in manuscript');
+      return;
+    }
+    // Also remove a leading space if it was added on insert
+    const removeFrom = (idx > 0 && fullText[idx - 1] === ' ') ? idx - 1 : idx;
+    const removeLen = (idx > 0 && fullText[idx - 1] === ' ') ? chunk.text.length + 1 : chunk.text.length;
+    editor.deleteText(removeFrom, removeLen, 'user');
+    setContent(editor.root.innerHTML);
+    setDictationHistory((prev) =>
+      prev.map((c) => (c.id === chunk.id ? { ...c, undone: true } : c))
+    );
+    toast.success('Dictation chunk removed');
+  };
+
+  const clearDictationHistory = () => {
+    setDictationHistory([]);
   };
 
   const handlePublish = async (platform) => {
@@ -961,23 +1030,47 @@ export default function EditorPage({ user }) {
               <Eye className="h-4 w-4 mr-2" />
               Preview
             </Button>
-            <Button
-              data-testid={isRecording ? 'stop-dictate-btn' : 'start-dictate-btn'}
-              variant={isRecording ? 'destructive' : 'outline'}
-              size="sm"
-              onClick={isRecording ? stopDictation : startDictation}
-              disabled={transcribing}
-              className="rounded-sm"
-              title={isRecording ? 'Stop dictation' : 'Dictate (Whisper)'}
-            >
-              {transcribing ? (
-                <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Transcribing…</>
-              ) : isRecording ? (
-                <><MicOff className="h-4 w-4 mr-2" /> Stop</>
-              ) : (
-                <><Mic className="h-4 w-4 mr-2" /> Dictate</>
-              )}
-            </Button>
+            <div className="flex items-center gap-1.5 rounded-sm border bg-card pl-2.5 pr-1 h-9">
+              <Switch
+                data-testid="continuous-mode-toggle"
+                id="continuous-mode"
+                checked={continuousMode}
+                disabled={isRecording}
+                onCheckedChange={setContinuousMode}
+                className="h-4 w-7"
+              />
+              <Label
+                htmlFor="continuous-mode"
+                className="text-[11px] font-medium cursor-pointer select-none"
+              >
+                Continuous
+              </Label>
+              <Button
+                data-testid={isRecording ? 'stop-dictate-btn' : 'start-dictate-btn'}
+                variant={isRecording ? 'destructive' : 'ghost'}
+                size="sm"
+                onClick={isRecording ? stopDictation : startDictation}
+                disabled={transcribing}
+                className="rounded-sm h-7 px-2 ml-1"
+                title={
+                  isRecording
+                    ? (continuousMode ? 'Stop continuous dictation' : 'Stop dictation')
+                    : (continuousMode ? 'Start continuous dictation (30s segments)' : 'Dictate (Whisper)')
+                }
+              >
+                {transcribing && !isRecording ? (
+                  <><Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> Transcribing…</>
+                ) : isRecording ? (
+                  <>
+                    <MicOff className="h-3.5 w-3.5 mr-1" />
+                    {continuousMode ? 'Stop' : 'Stop'}
+                    {transcribing && <span className="ml-1 text-[10px] opacity-70">+ ⌛</span>}
+                  </>
+                ) : (
+                  <><Mic className="h-3.5 w-3.5 mr-1" /> Dictate</>
+                )}
+              </Button>
+            </div>
             <Button
               data-testid="save-btn"
               size="sm"
@@ -1257,6 +1350,64 @@ export default function EditorPage({ user }) {
                     );
                   })}
                 </div>
+              </Card>
+            )}
+
+            {/* Dictation History */}
+            {dictationHistory.length > 0 && (
+              <Card data-testid="dictation-history-panel" className="p-4 bg-card/50 backdrop-blur-sm">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-heading font-semibold flex items-center gap-2">
+                    <Mic className="h-4 w-4 text-primary" />
+                    Dictation History
+                  </h3>
+                  <button
+                    data-testid="dictation-clear-btn"
+                    type="button"
+                    className="text-[10px] text-muted-foreground hover:text-destructive underline"
+                    onClick={clearDictationHistory}
+                  >
+                    Clear
+                  </button>
+                </div>
+                <div className="space-y-2 max-h-72 overflow-y-auto pr-1" data-testid="dictation-history-list">
+                  {dictationHistory.map((chunk) => (
+                    <div
+                      key={chunk.id}
+                      data-testid={`dictation-chunk-${chunk.id}`}
+                      className={`p-2 rounded-sm border text-xs leading-relaxed transition-opacity ${
+                        chunk.undone ? 'opacity-50 line-through bg-muted/40' : 'bg-card hover:bg-accent/30'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-2 mb-1">
+                        <span className="text-[10px] uppercase tracking-wider font-mono text-muted-foreground">
+                          {new Date(chunk.insertedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                        </span>
+                        {!chunk.undone && (
+                          <button
+                            data-testid={`dictation-undo-${chunk.id}`}
+                            type="button"
+                            className="text-[10px] text-muted-foreground hover:text-destructive flex items-center gap-0.5"
+                            onClick={() => undoDictationChunk(chunk)}
+                            title="Remove this dictation chunk from the manuscript"
+                          >
+                            <X className="h-2.5 w-2.5" /> Undo
+                          </button>
+                        )}
+                      </div>
+                      <p className="font-body line-clamp-4">{chunk.text}</p>
+                    </div>
+                  ))}
+                </div>
+                {isRecording && continuousMode && (
+                  <div data-testid="continuous-recording-indicator" className="mt-3 flex items-center gap-2 p-2 rounded-sm bg-red-50 border border-red-200 text-[11px] text-red-900">
+                    <span className="relative flex h-2 w-2">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
+                    </span>
+                    Recording in 30-second segments…
+                  </div>
+                )}
               </Card>
             )}
 

@@ -1,0 +1,38 @@
+{
+  "summary": "Iteration 9 — Continuous dictation mode + dictation history with per-chunk undo (frontend-only). Backend regression PASS 48/48 (test_dictation_and_cover_pdf 17 + test_pipeline_cover 17 + test_upload_export 14). Frontend Playwright PASS 14/14 checks: fresh-user register via page.evaluate, doc created, /editor/{id} loads with all required testids (continuous-mode-toggle, start-dictate-btn, pipeline-progress-card, book-setup-panel, ai-editor-panel, editors-desk-panel, audio-studio-panel); dictation-history-panel correctly absent from initial DOM (conditional render gate verified); clicking continuous-mode-toggle flips Radix data-state from 'unchecked' → 'checked'; clicking start-dictate-btn with no microphone in headless gracefully toasts 'Requested device not found' WITHOUT any React error overlay; meta-save flow (author + description filled, meta-save-btn clicked) shows 'Book details saved' toast; cover JPG upload renders cover-preview-img + cover-pdf-btn + cover-remove-btn.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_dictation_and_cover_pdf.py",
+    "/app/backend/tests/test_pipeline_cover.py",
+    "/app/backend/tests/test_upload_export.py",
+    "/app/test_reports/pytest/pytest_iter9_results.xml"
+  ],
+  "action_items": [
+    "(Carried from iter 8) Refactor /app/frontend/src/pages/EditorPage.js (now 2146 lines) — split Book-Setup, Dictation, AI-Editor, Audio-Studio into separate components/hooks per code-review note.",
+    "Optional: add a dedicated frontend Playwright test for the dictation-history undo/clear UI by directly seeding React state (requires test-only hook or harness route) — current functional gate (panel hidden when dictationHistory.length === 0) is verified by DOM-absence assertion."
+  ],
+  "critical_code_review_comments": [
+    "EditorPage.js: the new continuousMode + dictationHistory state lives alongside ~30 other useStates in a single 2146-line component. Splitting into useDictation() hook + <DictationHistoryPanel /> + <DictateToolbar /> would isolate the 30s recorder-cycle (_startRecorderCycle) timer logic which currently runs inline.",
+    "Recording cycle: ensure mediaRecorder.onstop cleanup runs on component unmount mid-recording (e.g., navigating away) so MediaStream tracks are stopped — verify navigator.mediaDevices stream tracks are stop()-ed in useEffect cleanup, otherwise mic indicator can persist after route change. Could not exercise this functionally in headless (no mic), so this is a code-review only finding.",
+    "Toast on mic failure resolves to 'Requested device not found' (browser DOMException message). Wrapping the catch block to map common DOMException names (NotFoundError → 'Microphone not available', NotAllowedError → 'Microphone permission denied', NotReadableError → 'Microphone in use by another app') would give clearer UX than echoing the raw browser string."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "100% (48/48 regression: 17 dictation+cover-pdf + 17 pipeline-cover + 14 upload-export)",
+    "frontend": "100% (14/14 Playwright checks: register + testid presence x7 + history-panel-absent + toggle-state-flip + no-crash + mic-error-toast + meta-save-toast + cover-upload-flow)"
+  },
+  "test_credentials": "Fresh per-run user TEST_iter9ui_<ts>@example.com / P@ssword123, registered via in-page fetch (urllib direct returns 403 via ingress).",
+  "seed_data_creation": "Per-run ephemeral user + document created via /api/auth/register and /api/documents (page.evaluate). Cover JPG (800x1280 navy) generated via PIL into /tmp/iter9_cover.jpg for cover-upload-input. No shared/persistent seed.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iter 9 verified — continuous-mode-toggle (Switch) + start-dictate-btn render in editor toolbar; dictation-history-panel is conditionally rendered only when dictationHistory.length > 0 (initial absence asserted). For full dictation-history e2e (chunk render, dictation-undo-{id}, dictation-clear-btn), a real or fake-media MediaRecorder is required: launch chromium with args ['--use-fake-device-for-media-stream','--use-fake-ui-for-media-stream'] AND context.grant_permissions(['microphone']), then mock /api/transcribe via page.route. Backend /api/transcribe contract (200 with {text,filename}, 400 on empty/oversize/invalid-ext, 401 unauth) is regression-covered by test_dictation_and_cover_pdf.py — all green against the external preview URL.",
+  "rca of the issue": "N/A — no failures."
+}
