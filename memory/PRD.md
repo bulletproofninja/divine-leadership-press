@@ -25,16 +25,23 @@ A book publishing / writing application that allows users to upload a Word doc, 
 - [x] **Real PDF export** (reportlab) at all 12 KDP trim sizes (5×8 → 8.5×11) with title page, page numbers, mirrored margins
 - [x] **Real ePub export** (ebooklib) with H1-based chapter splitting + serif CSS
 - [x] `/api/export/formats` endpoint + trim-size dropdown in editor
-- [x] Backend pytest suite at `/app/backend/tests/test_upload_export.py` (14/14 passing)
+- [x] **AI Editorial Polish** powered by Claude Sonnet 4.5 (via Emergent universal key):
+  - Tighten Prose, Improve Clarity, Back-Cover Blurb, Suggest Chapter Titles, Generate Synopsis
+  - Apply / Copy / Discard preview flow in editor sidebar
+- [x] Backend pytest suites (22 tests total, 100% pass):
+  - `/app/backend/tests/test_upload_export.py` (14)
+  - `/app/backend/tests/test_ai_editorial.py` (8)
 
 ## Architecture
 ```
 /app/
 ├── backend/
-│   ├── server.py          # FastAPI app: auth, documents, upload, export, integrations
+│   ├── server.py          # FastAPI app: auth, documents, upload, export, AI, integrations
 │   ├── exporters.py       # KDP_TRIM_SIZES, docx_to_html, generate_pdf, generate_epub
+│   ├── ai_editor.py       # Claude Sonnet 4.5 editorial tools (5 endpoints)
 │   ├── tests/test_upload_export.py
-│   └── requirements.txt   # + reportlab, beautifulsoup4, ebooklib, python-docx
+│   ├── tests/test_ai_editorial.py
+│   └── requirements.txt   # + reportlab, beautifulsoup4, ebooklib, python-docx, emergentintegrations
 ├── frontend/src/pages/
 │   ├── LandingPage.js
 │   ├── Dashboard.js       # upload accepts .docx/.txt/.pages
@@ -48,6 +55,8 @@ A book publishing / writing application that allows users to upload a Word doc, 
 - `GET /api/export/formats` → 12 KDP trim sizes + epub
 - `POST /api/documents/{id}/export?format=pdf&trim={key}` → application/pdf
 - `POST /api/documents/{id}/export?format=epub` → application/epub+zip
+- `GET /api/ai/tools` → 5 editorial tools (public)
+- `POST /api/documents/{id}/ai` `{tool, content?}` → Claude Sonnet 4.5 result
 - `POST /api/documents/{id}/comments` + `/versions`
 - `POST /api/integrations/{kdp|lulu}` (preparation-only, not real API hooks)
 
