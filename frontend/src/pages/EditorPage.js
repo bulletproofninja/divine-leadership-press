@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { ArrowLeft, Save, Download, History, MessageSquare, Settings, Eye, Globe, Loader2, FileType, BookOpen, Sparkles, Check, X, ScanSearch, AlertCircle, Lightbulb, FileSearch, Headphones, Play, Pause } from 'lucide-react';
+import { ArrowLeft, Save, Download, History, MessageSquare, Settings, Eye, Globe, Loader2, FileType, BookOpen, Sparkles, Check, X, ScanSearch, AlertCircle, Lightbulb, FileSearch, Headphones, Play, Pause, ImageIcon, Trash2 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -147,6 +147,10 @@ export default function EditorPage({ user }) {
   const [uploadedAudiobookInfo, setUploadedAudiobookInfo] = useState(null);
   const [uploadingAudiobook, setUploadingAudiobook] = useState(false);
   const [uploadedPlayerUrl, setUploadedPlayerUrl] = useState(null);
+  // Book Setup (metadata + cover)
+  const [coverPreviewUrl, setCoverPreviewUrl] = useState(null);
+  const [uploadingCover, setUploadingCover] = useState(false);
+  const [savingMetadata, setSavingMetadata] = useState(false);
 
   useEffect(() => {
     fetchDocument();
@@ -678,6 +682,80 @@ export default function EditorPage({ user }) {
     }
   };
 
+  // --- Book Setup (metadata + cover) ---
+  const updateMetadataField = (key, value) => {
+    setMetadata((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const saveMetadata = async () => {
+    setSavingMetadata(true);
+    try {
+      await axios.put(
+        `${API}/documents/${documentId}`,
+        { metadata },
+        getAuthHeaders()
+      );
+      toast.success('Book details saved');
+      fetchDocument();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Could not save details');
+    } finally {
+      setSavingMetadata(false);
+    }
+  };
+
+  const loadCoverPreview = async () => {
+    if (!docMeta?.cover_image_ext) {
+      if (coverPreviewUrl) window.URL.revokeObjectURL(coverPreviewUrl);
+      setCoverPreviewUrl(null);
+      return;
+    }
+    try {
+      const r = await axios.get(`${API}/documents/${documentId}/cover`, {
+        ...getAuthHeaders(),
+        responseType: 'blob',
+      });
+      if (coverPreviewUrl) window.URL.revokeObjectURL(coverPreviewUrl);
+      setCoverPreviewUrl(window.URL.createObjectURL(r.data));
+    } catch (_) {
+      setCoverPreviewUrl(null);
+    }
+  };
+
+  useEffect(() => {
+    loadCoverPreview();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docMeta?.cover_image_ext]);
+
+  const uploadCoverFile = async (file) => {
+    if (!file) return;
+    setUploadingCover(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      await axios.post(`${API}/documents/${documentId}/cover/upload`, fd, {
+        ...getAuthHeaders(),
+        headers: { ...getAuthHeaders().headers, 'Content-Type': 'multipart/form-data' },
+      });
+      toast.success('Cover uploaded');
+      fetchDocument();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Cover upload failed', { duration: 7000 });
+    } finally {
+      setUploadingCover(false);
+    }
+  };
+
+  const removeCover = async () => {
+    try {
+      await axios.delete(`${API}/documents/${documentId}/cover`, getAuthHeaders());
+      toast.success('Cover removed');
+      fetchDocument();
+    } catch (_) {
+      toast.error('Could not remove cover');
+    }
+  };
+
   const handlePublish = async (platform) => {
     try {
       const endpoint = platform === 'kdp' ? '/integrations/kdp' : '/integrations/lulu';
@@ -1002,6 +1080,212 @@ export default function EditorPage({ user }) {
                   </div>
                 </TabsContent>
               </Tabs>
+            </Card>
+
+            {/* Pipeline Progress */}
+            {docMeta?.pipeline_status && (
+              <Card data-testid="pipeline-progress-card" className="p-4 bg-card/50 backdrop-blur-sm">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-heading font-semibold flex items-center gap-2">
+                    <BookOpen className="h-4 w-4 text-primary" />
+                    Publication Pipeline
+                  </h3>
+                  <span data-testid="pipeline-progress-text" className="text-xs font-mono text-muted-foreground">
+                    {Object.values(docMeta.pipeline_status).filter(Boolean).length}/6
+                  </span>
+                </div>
+                <div className="grid grid-cols-6 gap-1">
+                  {[
+                    { key: 'manuscript', label: 'Manuscript' },
+                    { key: 'metadata', label: 'Metadata' },
+                    { key: 'cover', label: 'Cover' },
+                    { key: 'pdf', label: 'PDF' },
+                    { key: 'epub', label: 'ePub' },
+                    { key: 'audiobook', label: 'Audio' },
+                  ].map((step) => {
+                    const ok = !!docMeta.pipeline_status[step.key];
+                    return (
+                      <div
+                        key={step.key}
+                        data-testid={`pipeline-side-${step.key}`}
+                        data-status={ok ? 'done' : 'pending'}
+                        title={`${step.label} — ${ok ? 'Complete' : 'Pending'}`}
+                        className={`h-6 rounded-sm border flex items-center justify-center transition-colors ${
+                          ok
+                            ? 'bg-emerald-50 border-emerald-300'
+                            : 'bg-muted/30 border-border'
+                        }`}
+                      >
+                        {ok ? <Check className="h-3 w-3 text-emerald-700" /> : <span className="text-[10px] text-muted-foreground">{step.label[0]}</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </Card>
+            )}
+
+            {/* Book Setup — Cover + KDP Metadata */}
+            <Card data-testid="book-setup-panel" className="p-4 bg-card/50 backdrop-blur-sm">
+              <h3 className="text-sm font-heading font-semibold mb-3 flex items-center gap-2">
+                <ImageIcon className="h-4 w-4 text-primary" />
+                Book Setup
+              </h3>
+              <p className="text-xs text-muted-foreground mb-3 font-body">
+                Cover art and KDP metadata — required before submission to Amazon KDP / Lulu.
+              </p>
+
+              {/* Cover image */}
+              <div className="mb-4">
+                <Label className="text-xs">Cover Image</Label>
+                <div className="mt-1 flex gap-3 items-start">
+                  {coverPreviewUrl ? (
+                    <img
+                      data-testid="cover-preview-img"
+                      src={coverPreviewUrl}
+                      alt="Cover preview"
+                      className="h-24 w-16 rounded-sm object-cover border"
+                    />
+                  ) : (
+                    <div className="h-24 w-16 rounded-sm border-2 border-dashed flex items-center justify-center">
+                      <ImageIcon className="h-5 w-5 text-muted-foreground" />
+                    </div>
+                  )}
+                  <div className="flex-1 space-y-2">
+                    <label data-testid="cover-upload-label" className="block">
+                      <input
+                        data-testid="cover-upload-input"
+                        type="file"
+                        accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
+                        className="hidden"
+                        onChange={(e) => uploadCoverFile(e.target.files?.[0])}
+                      />
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="w-full rounded-sm text-xs"
+                        disabled={uploadingCover}
+                        type="button"
+                        onClick={(e) => e.currentTarget.previousSibling.click()}
+                      >
+                        {uploadingCover ? (<><Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> Uploading…</>) :
+                          (<>{coverPreviewUrl ? 'Replace Cover' : 'Upload Cover'}</>)}
+                      </Button>
+                    </label>
+                    {coverPreviewUrl && (
+                      <Button
+                        data-testid="cover-remove-btn"
+                        size="sm"
+                        variant="ghost"
+                        className="w-full rounded-sm text-xs"
+                        onClick={removeCover}
+                      >
+                        <Trash2 className="h-3.5 w-3.5 mr-1" /> Remove
+                      </Button>
+                    )}
+                    <p className="text-[10px] text-muted-foreground">JPG/PNG/WebP, ≤10 MB. KDP recommends 1600×2560.</p>
+                  </div>
+                </div>
+              </div>
+
+              <Separator className="my-3" />
+
+              {/* Metadata fields */}
+              <div className="space-y-3">
+                <div>
+                  <Label className="text-xs">Author</Label>
+                  <Input
+                    data-testid="meta-author-input"
+                    value={metadata.author || ''}
+                    onChange={(e) => updateMetadataField('author', e.target.value)}
+                    placeholder="Jane Q. Author"
+                    className="rounded-sm h-9 text-xs"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Subtitle</Label>
+                  <Input
+                    data-testid="meta-subtitle-input"
+                    value={metadata.subtitle || ''}
+                    onChange={(e) => updateMetadataField('subtitle', e.target.value)}
+                    placeholder="An optional subtitle"
+                    className="rounded-sm h-9 text-xs"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Description (for KDP)</Label>
+                  <Textarea
+                    data-testid="meta-description-input"
+                    value={metadata.description || ''}
+                    onChange={(e) => updateMetadataField('description', e.target.value)}
+                    placeholder="A short book description that appears on Amazon / Lulu listings."
+                    className="rounded-sm text-xs min-h-[80px]"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <Label className="text-xs">ISBN</Label>
+                    <Input
+                      data-testid="meta-isbn-input"
+                      value={metadata.isbn || ''}
+                      onChange={(e) => updateMetadataField('isbn', e.target.value)}
+                      placeholder="978-…"
+                      className="rounded-sm h-9 text-xs font-mono"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-xs">Language</Label>
+                    <Input
+                      data-testid="meta-language-input"
+                      value={metadata.language || 'English'}
+                      onChange={(e) => updateMetadataField('language', e.target.value)}
+                      className="rounded-sm h-9 text-xs"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <Label className="text-xs">Category</Label>
+                  <Input
+                    data-testid="meta-category-input"
+                    value={metadata.category || ''}
+                    onChange={(e) => updateMetadataField('category', e.target.value)}
+                    placeholder="e.g. Self-Help > Leadership"
+                    className="rounded-sm h-9 text-xs"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Keywords (comma-separated)</Label>
+                  <Input
+                    data-testid="meta-keywords-input"
+                    value={(metadata.keywords || []).join(', ')}
+                    onChange={(e) => updateMetadataField(
+                      'keywords',
+                      e.target.value.split(',').map((k) => k.trim()).filter(Boolean)
+                    )}
+                    placeholder="leadership, crisis, decisions"
+                    className="rounded-sm h-9 text-xs"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Publisher</Label>
+                  <Input
+                    data-testid="meta-publisher-input"
+                    value={metadata.publisher || ''}
+                    onChange={(e) => updateMetadataField('publisher', e.target.value)}
+                    placeholder="Divine Leadership Press"
+                    className="rounded-sm h-9 text-xs"
+                  />
+                </div>
+                <Button
+                  data-testid="meta-save-btn"
+                  size="sm"
+                  className="w-full rounded-sm"
+                  onClick={saveMetadata}
+                  disabled={savingMetadata}
+                >
+                  {savingMetadata ? (<><Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" /> Saving…</>) :
+                    (<><Save className="h-3.5 w-3.5 mr-2" /> Save Book Details</>)}
+                </Button>
+              </div>
             </Card>
 
             {/* Editor's Desk — Full Copy-Edit Pass */}

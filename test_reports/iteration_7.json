@@ -1,0 +1,46 @@
+{
+  "summary": "Iteration 7 — pipeline_status + cover uploads + KDP metadata. Backend pytest 17/17 NEW + 22/22 regression (upload_export + ai_editorial) = 100% pass. Frontend flows all functionally work BUT the React dev server is showing a 'Compiled with problems' error overlay (ESLint: rule 'react-hooks/exhaustive-deps' not found) that intercepts clicks on real user sessions. After programmatically removing the overlay iframe, every UI flow passes: pipeline badges + progress text, meta-save toast, cover upload + preview + remove, dashboard cover-thumb + description preference.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "EditorPage.js (line 727)",
+        "issue": "ESLint compile error overlay blocks the entire UI in dev: '[eslint] src/pages/EditorPage.js Line 727:5: Definition for rule react-hooks/exhaustive-deps was not found react-hooks/exhaustive-deps'. The overlay (iframe#webpack-dev-server-client-overlay) sits on top of the page and intercepts clicks — users cannot click meta-save-btn or cover-remove-btn until they dismiss the overlay. Production `yarn build` will likely fail with the same error. ROOT CAUSE: the file contains `// eslint-disable-next-line react-hooks/exhaustive-deps` at line 727 but the eslint config (CRA's eslint-config-react-app) is not registering the react-hooks plugin in this workspace, so the rule name is unknown and ESLint reports it as a hard error. FIX: either install/enable eslint-plugin-react-hooks in the frontend config OR remove the unrecognized disable-line comment (the lint suppression is no longer needed).",
+        "selector": "iframe#webpack-dev-server-client-overlay",
+        "priority": "HIGH"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_pipeline_cover.py",
+    "/app/test_reports/pytest/pytest_pipeline_results.xml"
+  ],
+  "action_items": [
+    "HIGH: Remove the orphaned `// eslint-disable-next-line react-hooks/exhaustive-deps` comment in /app/frontend/src/pages/EditorPage.js around line 727 (and any other occurrences) OR add eslint-plugin-react-hooks back into the eslint config so the rule is recognized. The current state causes a full-screen red CRA error overlay that blocks meta-save-btn and cover-remove-btn clicks for real users.",
+    "Optional: prior iteration-6 bug (ElevenLabs preview returns 502 instead of 401) is still tracked separately — not retested here."
+  ],
+  "critical_code_review_comments": [
+    "/app/frontend/src/pages/EditorPage.js is 1844 lines — still well over the 700-line guideline. Pipeline + Book-Setup panel (~250 lines) is a clean extraction candidate alongside the previously-flagged AudioStudio panel.",
+    "_compute_pipeline_status (server.py line 182) calls find_cover_upload and find_audio_upload (filesystem scans) for EVERY doc on the list endpoint. Acceptable for now but O(N) disk hits per request — consider caching cover_image_ext on the doc record (already done for cover) and a similar `audiobook_uploaded` flag to avoid the audio scan on /api/documents list, or batch-list per-user upload dirs once.",
+    "Cover upload validates extension only; no magic-byte check. The tests intentionally pass synthetic non-image bytes with .jpg extension and get 200 — matches the spec but worth a comment for security.",
+    "save_cover_upload uses synchronous Path.write_bytes inside an async endpoint; fine for ≤10 MB but use asyncio.to_thread for consistency."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_pipeline_cover.py (new — 17 tests, all pass)"
+  ],
+  "success_rate": {
+    "backend": "100% (17/17 new pipeline+cover tests pass; 22/22 prior regression tests still pass)",
+    "frontend": "100% functional once dev-server overlay is dismissed; 0% without dismissal (overlay blocks meta-save-btn and cover-remove-btn clicks)"
+  },
+  "test_credentials": "Fresh per-run users TEST_pipe_<ts>_<pid>@example.com / P@ssword123. No shared seed.",
+  "seed_data_creation": "Per-test ephemeral TEST_ users + documents via /api/auth/register and /api/documents. Cover/audiobook upload artifacts in /app/backend/uploads/{covers,audio}/<user_id>/.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend: /app/backend/tests/test_pipeline_cover.py covers all 17 spec items (pipeline_status presence on create/list, manuscript/metadata/cover/pdf/epub/audiobook flag transitions, cover endpoints incl. cross-user and unauth). All pass against the external REACT_APP_BACKEND_URL. Frontend Playwright flow validated after removing iframe#webpack-dev-server-client-overlay: dashboard pipeline-{docId} + pipeline-step-{docId}-{step} + cover-thumb-{docId}; editor pipeline-progress-card with pipeline-progress-text (0/6 → 1/6 after save), book-setup-panel all 10 testids present, meta-save toast 'Book details saved', cover upload toast 'Cover uploaded' + cover-preview-img, cover-remove-btn clears preview + flips pipeline.cover=false. Dashboard card description now shows metadata.description in preference to content snippet.",
+  "rca of the issue": "FRONTEND OVERLAY BUG: The CRA dev server is rendering a full-viewport red 'Compiled with problems' overlay because ESLint cannot resolve the rule 'react-hooks/exhaustive-deps' referenced in a `// eslint-disable-next-line react-hooks/exhaustive-deps` directive at EditorPage.js:727. This implies eslint-plugin-react-hooks is not registered in the active ESLint config (likely missing from CRA's eslintConfig in package.json or removed from node_modules). Two viable fixes: (1) delete the unrecognized disable-line comment(s) since the warning it suppresses isn't being emitted anyway; (2) re-add `eslint-plugin-react-hooks` and ensure CRA's `react-app` shareable config includes it. Option (1) is faster and unblocks both the dev overlay AND any `yarn build` failure. Reproduction: open any /editor/:id page in a browser without overriding the overlay — observe red overlay covering the page, then try to click data-testid='meta-save-btn' → click is intercepted (no toast, no save)."
+}

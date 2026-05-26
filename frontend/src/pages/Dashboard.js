@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Plus, FileText, Upload, LogOut, Search, Calendar, File, Trash2 } from 'lucide-react';
+import { Plus, FileText, Upload, LogOut, Search, Calendar, File, Trash2, Edit, ImageIcon, BookOpen, FileType, Headphones } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Card } from '../components/ui/card';
@@ -16,9 +16,95 @@ const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 const LOGO_URL = 'https://customer-assets.emergentagent.com/job_book-press/artifacts/gwdawx4q_Divine%20Leadership%20Press%20Emblem%281%29.png';
 
+const PIPELINE_STEPS = [
+  { key: 'manuscript', label: 'Manuscript', icon: Edit },
+  { key: 'metadata', label: 'Metadata', icon: FileText },
+  { key: 'cover', label: 'Cover', icon: ImageIcon },
+  { key: 'pdf', label: 'PDF', icon: BookOpen },
+  { key: 'epub', label: 'ePub', icon: FileType },
+  { key: 'audiobook', label: 'Audio', icon: Headphones },
+];
+
+function PipelineBadges({ status, docId }) {
+  const s = status || {};
+  const done = PIPELINE_STEPS.filter((step) => s[step.key]).length;
+  return (
+    <div data-testid={`pipeline-${docId}`} className="mt-3 pt-3 border-t border-border/60">
+      <div className="flex items-center justify-between mb-1.5">
+        <span className="text-[10px] uppercase tracking-wider font-mono text-muted-foreground">
+          Pipeline
+        </span>
+        <span data-testid={`pipeline-progress-${docId}`} className="text-[10px] font-mono text-muted-foreground">
+          {done}/{PIPELINE_STEPS.length}
+        </span>
+      </div>
+      <div className="flex items-center gap-1.5">
+        {PIPELINE_STEPS.map((step) => {
+          const Icon = step.icon;
+          const ok = !!s[step.key];
+          return (
+            <div
+              key={step.key}
+              data-testid={`pipeline-step-${docId}-${step.key}`}
+              data-status={ok ? 'done' : 'pending'}
+              title={`${step.label} — ${ok ? 'Complete' : 'Pending'}`}
+              className={`flex-1 flex items-center justify-center h-7 rounded-sm border transition-colors ${
+                ok
+                  ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
+                  : 'bg-muted/30 border-border text-muted-foreground/60'
+              }`}
+            >
+              <Icon className="h-3 w-3" />
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 const getAuthHeaders = () => ({
   headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
 });
+
+function CoverThumbnail({ docId, hasCover }) {
+  const [src, setSrc] = useState(null);
+  useEffect(() => {
+    let url = null;
+    if (!hasCover) return undefined;
+    (async () => {
+      try {
+        const r = await axios.get(`${API}/documents/${docId}/cover`, {
+          ...getAuthHeaders(),
+          responseType: 'blob',
+        });
+        url = window.URL.createObjectURL(r.data);
+        setSrc(url);
+      } catch (_) {
+        setSrc(null);
+      }
+    })();
+    return () => {
+      if (url) window.URL.revokeObjectURL(url);
+    };
+  }, [docId, hasCover]);
+
+  if (!hasCover || !src) {
+    return (
+      <div className="p-2 rounded-md bg-primary/10">
+        <File className="h-6 w-6 text-primary" />
+      </div>
+    );
+  }
+  return (
+    <img
+      data-testid={`cover-thumb-${docId}`}
+      src={src}
+      alt="Cover"
+      className="h-14 w-10 rounded-sm object-cover border border-border/60"
+    />
+  );
+}
 
 export default function Dashboard({ user, onLogout }) {
   const navigate = useNavigate();
@@ -268,16 +354,14 @@ export default function Dashboard({ user, onLogout }) {
                     <Trash2 className="h-4 w-4" />
                   </Button>
                   <div className="flex items-start justify-between mb-4">
-                    <div className="p-2 rounded-md bg-primary/10">
-                      <File className="h-6 w-6 text-primary" />
-                    </div>
+                    <CoverThumbnail docId={doc.id} hasCover={!!doc.cover_image_ext} />
                     <span className="text-xs font-mono text-muted-foreground px-2 py-1 bg-secondary rounded">
                       {doc.format}
                     </span>
                   </div>
                   <h3 className="text-lg font-heading font-semibold mb-2 line-clamp-2">{doc.title}</h3>
                   <p className="text-sm text-muted-foreground font-body line-clamp-3 mb-4 flex-1">
-                    {doc.content || 'No content yet'}
+                    {doc.metadata?.description || doc.content || 'No content yet'}
                   </p>
                   <div className="flex items-center justify-between text-xs text-muted-foreground pt-4 border-t">
                     <div className="flex items-center gap-1">
@@ -289,6 +373,7 @@ export default function Dashboard({ user, onLogout }) {
                       <span>{doc.comment_count} comments</span>
                     </div>
                   </div>
+                  <PipelineBadges status={doc.pipeline_status} docId={doc.id} />
                 </Card>
               </motion.div>
             ))}

@@ -51,6 +51,13 @@ from audio_uploads import (
     media_type_for as audio_media_type,
     ALLOWED_EXTENSIONS as AUDIO_ALLOWED_EXTENSIONS,
 )
+from cover_uploads import (
+    save_upload as save_cover_upload,
+    find_existing as find_cover_upload,
+    delete_existing as delete_cover_upload,
+    media_type_for as cover_media_type,
+    ALLOWED_EXTENSIONS as COVER_ALLOWED_EXTENSIONS,
+)
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -109,12 +116,15 @@ class TokenResponse(BaseModel):
 class DocumentMetadata(BaseModel):
     isbn: Optional[str] = None
     title: Optional[str] = None
+    subtitle: Optional[str] = None
     author: Optional[str] = None
     publisher: Optional[str] = None
     publication_date: Optional[str] = None
     language: Optional[str] = "English"
     page_count: Optional[int] = None
     genre: Optional[str] = None
+    category: Optional[str] = None  # KDP category, e.g. "Self-Help > Leadership"
+    keywords: List[str] = Field(default_factory=list)
     description: Optional[str] = None
 
 class Comment(BaseModel):
@@ -141,10 +151,79 @@ class DocumentModel(BaseModel):
     format: str = "6x9"
     original_filename: Optional[str] = None
     metadata: DocumentMetadata = Field(default_factory=DocumentMetadata)
+    cover_image_ext: Optional[str] = None
+    last_pdf_export_at: Optional[datetime] = None
+    last_epub_export_at: Optional[datetime] = None
+    last_audio_export_at: Optional[datetime] = None
     versions: List[Version] = Field(default_factory=list)
     comments: List[Comment] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class PipelineStatus(BaseModel):
+    manuscript: bool = False
+    metadata: bool = False
+    cover: bool = False
+    pdf: bool = False
+    epub: bool = False
+    audiobook: bool = False
+
+    @property
+    def completed(self) -> int:
+        return sum([self.manuscript, self.metadata, self.cover, self.pdf, self.epub, self.audiobook])
+
+
+def _strip_html_text(html: str) -> str:
+    import re as _re
+    return _re.sub(r"<[^>]+>", "", html or "").strip()
+
+
+def _compute_pipeline_status(doc: dict, user_id: str) -> "PipelineStatus":
+    metadata = doc.get("metadata") or {}
+    has_audio_upload = bool(find_audio_upload(user_id, doc.get("id", "")))
+    return PipelineStatus(
+        manuscript=len(_strip_html_text(doc.get("content") or "")) >= 50,
+        metadata=bool((metadata.get("author") or "").strip())
+                  and bool((metadata.get("description") or "").strip()),
+        cover=bool(doc.get("cover_image_ext")) or bool(find_cover_upload(user_id, doc.get("id", ""))),
+        pdf=bool(doc.get("last_pdf_export_at")),
+        epub=bool(doc.get("last_epub_export_at")),
+        audiobook=has_audio_upload or bool(doc.get("last_audio_export_at")),
+    )
+
+
+def _build_document_response(doc: dict, user_id: str, include_pipeline: bool = True) -> "DocumentResponse":
+    if isinstance(doc.get("created_at"), str):
+        doc["created_at"] = datetime.fromisoformat(doc["created_at"])
+    if isinstance(doc.get("updated_at"), str):
+        doc["updated_at"] = datetime.fromisoformat(doc["updated_at"])
+    for ts_field in ("last_pdf_export_at", "last_epub_export_at", "last_audio_export_at"):
+        v = doc.get(ts_field)
+        if isinstance(v, str):
+            try:
+                doc[ts_field] = datetime.fromisoformat(v)
+            except ValueError:
+                doc[ts_field] = None
+
+    return DocumentResponse(
+        id=doc["id"],
+        title=doc["title"],
+        content=doc.get("content", ""),
+        user_id=doc["user_id"],
+        format=doc.get("format", "6x9"),
+        original_filename=doc.get("original_filename"),
+        metadata=DocumentMetadata(**(doc.get("metadata") or {})),
+        cover_image_ext=doc.get("cover_image_ext"),
+        last_pdf_export_at=doc.get("last_pdf_export_at"),
+        last_epub_export_at=doc.get("last_epub_export_at"),
+        last_audio_export_at=doc.get("last_audio_export_at"),
+        created_at=doc["created_at"],
+        updated_at=doc["updated_at"],
+        version_count=len(doc.get("versions", [])),
+        comment_count=len(doc.get("comments", [])),
+        pipeline_status=_compute_pipeline_status(doc, user_id) if include_pipeline else None,
+    )
 
 class DocumentCreate(BaseModel):
     title: str
@@ -165,10 +244,15 @@ class DocumentResponse(BaseModel):
     format: str
     original_filename: Optional[str]
     metadata: DocumentMetadata
+    cover_image_ext: Optional[str] = None
+    last_pdf_export_at: Optional[datetime] = None
+    last_epub_export_at: Optional[datetime] = None
+    last_audio_export_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
     version_count: int
     comment_count: int
+    pipeline_status: Optional[PipelineStatus] = None
 
 class CommentCreate(BaseModel):
     content: str
@@ -343,71 +427,20 @@ async def create_document(doc_data: DocumentCreate, current_user: User = Depends
     
     await db.documents.insert_one(doc)
     
-    return DocumentResponse(
-        id=document.id,
-        title=document.title,
-        content=document.content,
-        user_id=document.user_id,
-        format=document.format,
-        original_filename=document.original_filename,
-        metadata=document.metadata,
-        created_at=document.created_at,
-        updated_at=document.updated_at,
-        version_count=len(document.versions),
-        comment_count=len(document.comments)
-    )
+    fresh = await db.documents.find_one({"id": document.id}, {"_id": 0})
+    return _build_document_response(fresh, current_user.id)
 
 @api_router.get("/documents", response_model=List[DocumentResponse])
 async def get_documents(current_user: User = Depends(get_current_user)):
     docs = await db.documents.find({"user_id": current_user.id}, {"_id": 0}).to_list(1000)
-    
-    results = []
-    for doc in docs:
-        if isinstance(doc['created_at'], str):
-            doc['created_at'] = datetime.fromisoformat(doc['created_at'])
-        if isinstance(doc['updated_at'], str):
-            doc['updated_at'] = datetime.fromisoformat(doc['updated_at'])
-        
-        results.append(DocumentResponse(
-            id=doc['id'],
-            title=doc['title'],
-            content=doc['content'],
-            user_id=doc['user_id'],
-            format=doc['format'],
-            original_filename=doc.get('original_filename'),
-            metadata=DocumentMetadata(**doc.get('metadata', {})),
-            created_at=doc['created_at'],
-            updated_at=doc['updated_at'],
-            version_count=len(doc.get('versions', [])),
-            comment_count=len(doc.get('comments', []))
-        ))
-    
-    return results
+    return [_build_document_response(d, current_user.id) for d in docs]
 
 @api_router.get("/documents/{document_id}", response_model=DocumentResponse)
 async def get_document(document_id: str, current_user: User = Depends(get_current_user)):
     doc = await db.documents.find_one({"id": document_id, "user_id": current_user.id}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
-    
-    if isinstance(doc['created_at'], str):
-        doc['created_at'] = datetime.fromisoformat(doc['created_at'])
-    if isinstance(doc['updated_at'], str):
-        doc['updated_at'] = datetime.fromisoformat(doc['updated_at'])
-    
-    return DocumentResponse(
-        id=doc['id'],
-        title=doc['title'],
-        content=doc['content'],
-        user_id=doc['user_id'],
-        format=doc['format'],
-        original_filename=doc.get('original_filename'),
-        metadata=DocumentMetadata(**doc.get('metadata', {})),
-        created_at=doc['created_at'],
-        updated_at=doc['updated_at'],
-        version_count=len(doc.get('versions', [])),
-        comment_count=len(doc.get('comments', []))
-    )
+    return _build_document_response(doc, current_user.id)
 
 @api_router.put("/documents/{document_id}", response_model=DocumentResponse)
 async def update_document(document_id: str, update_data: DocumentUpdate, current_user: User = Depends(get_current_user)):
@@ -444,24 +477,7 @@ async def update_document(document_id: str, update_data: DocumentUpdate, current
     )
     
     updated_doc = await db.documents.find_one({"id": document_id}, {"_id": 0})
-    if isinstance(updated_doc['created_at'], str):
-        updated_doc['created_at'] = datetime.fromisoformat(updated_doc['created_at'])
-    if isinstance(updated_doc['updated_at'], str):
-        updated_doc['updated_at'] = datetime.fromisoformat(updated_doc['updated_at'])
-    
-    return DocumentResponse(
-        id=updated_doc['id'],
-        title=updated_doc['title'],
-        content=updated_doc['content'],
-        user_id=updated_doc['user_id'],
-        format=updated_doc['format'],
-        original_filename=updated_doc.get('original_filename'),
-        metadata=DocumentMetadata(**updated_doc.get('metadata', {})),
-        created_at=updated_doc['created_at'],
-        updated_at=updated_doc['updated_at'],
-        version_count=len(updated_doc.get('versions', [])),
-        comment_count=len(updated_doc.get('comments', []))
-    )
+    return _build_document_response(updated_doc, current_user.id)
 
 @api_router.delete("/documents/{document_id}")
 async def delete_document(document_id: str, current_user: User = Depends(get_current_user)):
@@ -534,19 +550,8 @@ async def upload_document(file: UploadFile = File(...), current_user: User = Dep
 
     await db.documents.insert_one(doc)
 
-    return DocumentResponse(
-        id=document.id,
-        title=document.title,
-        content=document.content,
-        user_id=document.user_id,
-        format=document.format,
-        original_filename=document.original_filename,
-        metadata=document.metadata,
-        created_at=document.created_at,
-        updated_at=document.updated_at,
-        version_count=len(document.versions),
-        comment_count=len(document.comments),
-    )
+    fresh = await db.documents.find_one({"id": document.id}, {"_id": 0})
+    return _build_document_response(fresh, current_user.id)
 
 # --- VERSION ROUTES ---
 
@@ -797,6 +802,10 @@ async def generate_audiobook(
         logger.exception("Audiobook generation failed")
         raise HTTPException(status_code=502, detail=f"Audiobook service error: {exc}")
 
+    await db.documents.update_one(
+        {"id": document_id},
+        {"$set": {"last_audio_export_at": datetime.now(timezone.utc).isoformat()}},
+    )
     return Response(
         content=mp3,
         media_type="audio/mpeg",
@@ -924,6 +933,10 @@ async def elevenlabs_audiobook(
         logger.exception("ElevenLabs audiobook failed")
         raise HTTPException(status_code=502, detail=f"ElevenLabs error: {exc}")
 
+    await db.documents.update_one(
+        {"id": document_id},
+        {"$set": {"last_audio_export_at": datetime.now(timezone.utc).isoformat()}},
+    )
     return Response(
         content=mp3,
         media_type="audio/mpeg",
@@ -1023,6 +1036,79 @@ async def audiobook_info(
     }
 
 
+# --- COVER IMAGE UPLOADS ---
+
+@api_router.post("/documents/{document_id}/cover/upload")
+async def upload_cover(
+    document_id: str,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+):
+    doc = await db.documents.find_one(
+        {"id": document_id, "user_id": current_user.id}, {"_id": 0}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    data = await file.read()
+    try:
+        path, ext = save_cover_upload(current_user.id, document_id, file.filename or "cover.jpg", data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    await db.documents.update_one(
+        {"id": document_id},
+        {"$set": {"cover_image_ext": ext, "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {
+        "document_id": document_id,
+        "filename": path.name,
+        "extension": ext,
+        "size_bytes": path.stat().st_size,
+        "uploaded": True,
+    }
+
+
+@api_router.get("/documents/{document_id}/cover")
+async def fetch_cover(
+    document_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    doc = await db.documents.find_one(
+        {"id": document_id, "user_id": current_user.id}, {"_id": 0}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    found = find_cover_upload(current_user.id, document_id)
+    if not found:
+        raise HTTPException(status_code=404, detail="No cover uploaded for this document.")
+    path, ext = found
+    return Response(
+        content=path.read_bytes(),
+        media_type=cover_media_type(ext),
+        headers={"Cache-Control": "private, max-age=60"},
+    )
+
+
+@api_router.delete("/documents/{document_id}/cover")
+async def remove_cover(
+    document_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    doc = await db.documents.find_one(
+        {"id": document_id, "user_id": current_user.id}, {"_id": 0}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    deleted = delete_cover_upload(current_user.id, document_id)
+    if deleted:
+        await db.documents.update_one(
+            {"id": document_id},
+            {"$set": {"cover_image_ext": None, "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+    return {"deleted": deleted}
+
+
 # --- EXPORT ROUTES ---
 
 @api_router.get("/export/formats")
@@ -1094,6 +1180,10 @@ async def export_document(
             trim_key=trim_key,
             publisher=publisher,
         )
+        await db.documents.update_one(
+            {"id": document_id},
+            {"$set": {"last_pdf_export_at": datetime.now(timezone.utc).isoformat()}},
+        )
         return Response(
             content=pdf_bytes,
             media_type="application/pdf",
@@ -1109,6 +1199,10 @@ async def export_document(
             author=author,
             html_content=content,
             publisher=publisher,
+        )
+        await db.documents.update_one(
+            {"id": document_id},
+            {"$set": {"last_epub_export_at": datetime.now(timezone.utc).isoformat()}},
         )
         return Response(
             content=epub_bytes,
