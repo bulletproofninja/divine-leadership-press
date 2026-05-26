@@ -45,13 +45,16 @@ A book publishing / writing application that allows users to upload a Word doc, 
   - Server-side `_compute_pipeline_status` checks content length, metadata completeness, cover/audio uploads, and export timestamps
 - [x] **Book Setup panel** in editor — Cover image upload (JPG/PNG/WebP ≤10 MB, with thumbnail preview), plus KDP metadata fields: Author, Subtitle, Description, ISBN, Language, Category, Keywords, Publisher
 - [x] Dashboard cover thumbnails (replaces generic icon when a cover is uploaded)
-- [x] Backend pytest suites (83 tests, 100% pass):
+- [x] **Cover → PDF converter** (reportlab + PIL): one-click "Download Cover as PDF" from Book Setup, sized to selected KDP trim; plus a generic `POST /api/tools/image-to-pdf` endpoint for any JPG/PNG/WebP
+- [x] **Voice Dictation** (OpenAI Whisper via Emergent key): Dictate button in editor toolbar; MediaRecorder captures mic, sends to `/api/transcribe`, Whisper returns punctuated text, inserted at the Quill cursor position
+- [x] Backend pytest suites (100 tests, 100% pass):
   - `/app/backend/tests/test_upload_export.py` (14)
   - `/app/backend/tests/test_ai_editorial.py` (8)
   - `/app/backend/tests/test_copyedit.py` (11)
   - `/app/backend/tests/test_audio_studio.py` (11)
   - `/app/backend/tests/test_elevenlabs_upload.py` (22)
   - `/app/backend/tests/test_pipeline_cover.py` (17)
+  - `/app/backend/tests/test_dictation_and_cover_pdf.py` (17)
 
 ## Architecture
 ```
