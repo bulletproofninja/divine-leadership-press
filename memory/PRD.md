@@ -54,6 +54,7 @@ A book publishing / writing application that allows users to upload a Word doc, 
   - List/play/transcribe-and-insert/delete per memo
   - Transcripts cached after first Whisper call (subsequent inserts re-use cached text)
   - Storage: file on disk under `/app/backend/uploads/memos/{user_id}/{document_id}/`, metadata in `document.memos` array
+- [x] **Help & Documentation page** (`/help`, public route): 13 sections covering every major feature (Getting Started, Pipeline, Upload, Editor, Book Setup, Editor's Desk, AI Polish, Dictation, Voice Memos, Audio Studio, Export, Privacy, Tips). Sticky TOC sidebar, motion-animated section reveals, **bold** markdown rendering. Help links in Dashboard + Editor headers.
 - [x] Backend pytest suites (113 tests, 100% pass):
   - `/app/backend/tests/test_upload_export.py` (14)
   - `/app/backend/tests/test_ai_editorial.py` (8)
