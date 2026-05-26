@@ -93,6 +93,13 @@ api_router = APIRouter(prefix="/api")
 
 # --- MODELS ---
 
+import secrets
+
+def _generate_referral_code() -> str:
+    """8-character URL-safe code, uppercase for memorability."""
+    return secrets.token_urlsafe(6)[:8].upper().replace("-", "X").replace("_", "Y")
+
+
 class User(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -100,12 +107,15 @@ class User(BaseModel):
     name: str
     password_hash: str
     elevenlabs_api_key: Optional[str] = None
+    referral_code: str = Field(default_factory=_generate_referral_code)
+    referred_by: Optional[str] = None  # the referral_code of whoever referred this user
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class UserRegister(BaseModel):
     email: EmailStr
     name: str
     password: str
+    referral_code: Optional[str] = None  # optional invite code
 
 class UserLogin(BaseModel):
     email: EmailStr
@@ -116,6 +126,7 @@ class UserResponse(BaseModel):
     email: str
     name: str
     has_elevenlabs_key: bool = False
+    referral_code: Optional[str] = None
     created_at: datetime
 
 class TokenResponse(BaseModel):
@@ -321,26 +332,37 @@ async def register(user_data: UserRegister):
     existing = await db.users.find_one({"email": user_data.email}, {"_id": 0})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
-    
+
+    # Resolve referral code if provided — must be a real existing user's code
+    referred_by = None
+    if user_data.referral_code:
+        code = user_data.referral_code.strip().upper()
+        if code:
+            referrer = await db.users.find_one({"referral_code": code}, {"_id": 0, "id": 1})
+            if referrer:
+                referred_by = code
+
     user = User(
         email=user_data.email,
         name=user_data.name,
-        password_hash=hash_password(user_data.password)
+        password_hash=hash_password(user_data.password),
+        referred_by=referred_by,
     )
-    
+
     doc = user.model_dump()
     doc['created_at'] = doc['created_at'].isoformat()
     await db.users.insert_one(doc)
-    
+
     token = create_access_token({"sub": user.id})
     user_response = UserResponse(
         id=user.id,
         email=user.email,
         name=user.name,
         has_elevenlabs_key=bool(user.elevenlabs_api_key),
+        referral_code=user.referral_code,
         created_at=user.created_at
     )
-    
+
     return TokenResponse(token=token, user=user_response)
 
 @api_router.post("/auth/login", response_model=TokenResponse)
@@ -363,6 +385,7 @@ async def login(credentials: UserLogin):
         email=user.email,
         name=user.name,
         has_elevenlabs_key=bool(user.elevenlabs_api_key),
+        referral_code=user.referral_code,
         created_at=user.created_at
     )
     
@@ -370,13 +393,53 @@ async def login(credentials: UserLogin):
 
 @api_router.get("/auth/me", response_model=UserResponse)
 async def get_me(current_user: User = Depends(get_current_user)):
+    # Backfill referral_code for legacy users who registered before the feature existed
+    if not current_user.referral_code:
+        current_user.referral_code = _generate_referral_code()
+        await db.users.update_one(
+            {"id": current_user.id},
+            {"$set": {"referral_code": current_user.referral_code}},
+        )
     return UserResponse(
         id=current_user.id,
         email=current_user.email,
         name=current_user.name,
         has_elevenlabs_key=bool(current_user.elevenlabs_api_key),
+        referral_code=current_user.referral_code,
         created_at=current_user.created_at
     )
+
+
+@api_router.get("/auth/me/referrals")
+async def my_referrals(current_user: User = Depends(get_current_user)):
+    """Return the current user's referral code and a summary of people they have invited."""
+    code = current_user.referral_code
+    if not code:
+        code = _generate_referral_code()
+        await db.users.update_one(
+            {"id": current_user.id},
+            {"$set": {"referral_code": code}},
+        )
+
+    referred_cursor = db.users.find(
+        {"referred_by": code},
+        {"_id": 0, "name": 1, "email": 1, "created_at": 1},
+    )
+    referred = await referred_cursor.to_list(500)
+    # Strip emails to protect privacy — only show name + signup date
+    public = []
+    for r in referred:
+        ts = r.get("created_at")
+        if isinstance(ts, datetime):
+            ts = ts.isoformat()
+        public.append({"name": r.get("name", "Anonymous Author"), "joined_at": ts})
+
+    public.sort(key=lambda x: x["joined_at"] or "", reverse=True)
+    return {
+        "referral_code": code,
+        "total_referred": len(public),
+        "recent": public[:20],
+    }
 
 
 class ElevenLabsKeyRequest(BaseModel):
@@ -400,6 +463,7 @@ async def set_elevenlabs_key(
         email=current_user.email,
         name=current_user.name,
         has_elevenlabs_key=True,
+        referral_code=current_user.referral_code,
         created_at=current_user.created_at,
     )
 
@@ -415,6 +479,7 @@ async def clear_elevenlabs_key(current_user: User = Depends(get_current_user)):
         email=current_user.email,
         name=current_user.name,
         has_elevenlabs_key=False,
+        referral_code=current_user.referral_code,
         created_at=current_user.created_at,
     )
 

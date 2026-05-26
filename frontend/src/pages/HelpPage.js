@@ -1,14 +1,25 @@
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
+import axios from 'axios';
+import { toast } from 'sonner';
 import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
+import { Input } from '../components/ui/input';
 import {
   ArrowLeft, Upload, FileText, ImageIcon, BookOpen, Sparkles, ScanSearch,
   Mic, Headphones, FileDown, History, MessageSquare, Layers, Globe, FileType,
-  Lightbulb, Shield, HelpCircle,
+  Lightbulb, Shield, HelpCircle, Share2, Copy, Users,
 } from 'lucide-react';
 
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const API = `${BACKEND_URL}/api`;
 const LOGO_URL = 'https://customer-assets.emergentagent.com/job_book-press/artifacts/gwdawx4q_Divine%20Leadership%20Press%20Emblem%281%29.png';
+
+const getAuthHeaders = () => {
+  const token = localStorage.getItem('token');
+  return token ? { headers: { Authorization: `Bearer ${token}` } } : { headers: {} };
+};
 
 const SECTIONS = [
   {
@@ -170,6 +181,48 @@ const SECTIONS = [
 
 export default function HelpPage() {
   const navigate = useNavigate();
+  const [referral, setReferral] = useState(null);
+  const [copying, setCopying] = useState(false);
+  const isAuthed = !!localStorage.getItem('token');
+
+  useEffect(() => {
+    if (!isAuthed) return;
+    axios.get(`${API}/auth/me/referrals`, getAuthHeaders())
+      .then((r) => setReferral(r.data))
+      .catch(() => setReferral(null));
+  }, [isAuthed]);
+
+  const referralUrl = referral
+    ? `${window.location.origin}/?ref=${referral.referral_code}`
+    : '';
+
+  const copyReferralLink = async () => {
+    if (!referralUrl) return;
+    setCopying(true);
+    try {
+      await navigator.clipboard.writeText(referralUrl);
+      toast.success('Referral link copied');
+    } catch (_) {
+      toast.error('Could not copy — copy manually');
+    } finally {
+      setCopying(false);
+    }
+  };
+
+  const shareNative = async () => {
+    if (!referralUrl) return;
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: 'Divine Leadership Press',
+          text: 'I\'m using Divine Leadership Press to write and publish my book. Join me:',
+          url: referralUrl,
+        });
+      } catch (_) {/* user cancelled */}
+    } else {
+      copyReferralLink();
+    }
+  };
 
   return (
     <div className="min-h-screen bg-background">
@@ -212,6 +265,15 @@ export default function HelpPage() {
                 {section.title}
               </a>
             ))}
+            {isAuthed && (
+              <a
+                href="#share"
+                data-testid="help-toc-share"
+                className="block py-1.5 px-2 text-sm font-body text-primary hover:bg-accent/40 rounded-sm transition-colors mt-2 pt-2 border-t"
+              >
+                Share & Refer
+              </a>
+            )}
           </div>
         </aside>
 
@@ -288,6 +350,112 @@ export default function HelpPage() {
               </motion.section>
             );
           })}
+
+          {/* Share & Refer */}
+          {isAuthed && referral && (
+            <motion.section
+              initial={{ opacity: 0, y: 10 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true, margin: '-100px' }}
+              transition={{ duration: 0.4 }}
+              data-testid="referral-card"
+              className="scroll-mt-28"
+              id="share"
+            >
+              <div className="flex items-center gap-3 mb-2">
+                <div className="p-2 rounded-sm bg-primary/10 text-primary">
+                  <Share2 className="h-5 w-5" />
+                </div>
+                <span className="text-[10px] uppercase tracking-[0.22em] font-mono text-muted-foreground">
+                  Bonus · Share & Refer
+                </span>
+              </div>
+              <h2 className="text-2xl sm:text-3xl font-heading font-semibold mb-1">
+                Invite an Author to Divine Leadership Press
+              </h2>
+              <p className="text-sm text-muted-foreground italic font-body mb-5">
+                Every writer you know has a book in them. Send them your personal invite link.
+              </p>
+              <Card className="p-6 bg-card/60 backdrop-blur-sm border-l-4 border-l-primary/70 rounded-sm">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-5">
+                  <div className="p-3 rounded-sm border bg-accent/30 text-center">
+                    <div className="text-[10px] uppercase tracking-wider font-mono text-muted-foreground">
+                      Your Referral Code
+                    </div>
+                    <div
+                      data-testid="referral-code-display"
+                      className="text-2xl font-heading font-semibold tracking-wider text-primary mt-1"
+                    >
+                      {referral.referral_code}
+                    </div>
+                  </div>
+                  <div className="p-3 rounded-sm border bg-accent/30 text-center">
+                    <div className="text-[10px] uppercase tracking-wider font-mono text-muted-foreground">
+                      Authors You've Invited
+                    </div>
+                    <div data-testid="referral-total-count" className="text-2xl font-heading font-semibold mt-1 flex items-center justify-center gap-2">
+                      <Users className="h-5 w-5 text-primary" />
+                      {referral.total_referred}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mb-3">
+                  <label className="text-xs uppercase tracking-wider font-mono text-muted-foreground">
+                    Share this link
+                  </label>
+                  <div className="mt-1 flex gap-2">
+                    <Input
+                      data-testid="referral-link-input"
+                      value={referralUrl}
+                      readOnly
+                      onFocus={(e) => e.target.select()}
+                      className="rounded-sm font-mono text-xs flex-1"
+                    />
+                    <Button
+                      data-testid="referral-copy-btn"
+                      variant="outline"
+                      size="sm"
+                      className="rounded-sm"
+                      disabled={copying}
+                      onClick={copyReferralLink}
+                    >
+                      <Copy className="h-3.5 w-3.5 mr-1" /> Copy
+                    </Button>
+                    <Button
+                      data-testid="referral-share-btn"
+                      size="sm"
+                      className="rounded-sm"
+                      onClick={shareNative}
+                    >
+                      <Share2 className="h-3.5 w-3.5 mr-1" /> Share
+                    </Button>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground mt-2">
+                    Anyone who registers via this link will be attributed to your account.
+                  </p>
+                </div>
+
+                {referral.recent && referral.recent.length > 0 && (
+                  <div data-testid="referral-recent-list" className="mt-4 pt-4 border-t">
+                    <div className="text-[10px] uppercase tracking-wider font-mono text-muted-foreground mb-2">
+                      Recent invitees
+                    </div>
+                    <ul className="space-y-1.5">
+                      {referral.recent.slice(0, 5).map((r, i) => (
+                        <li key={i} className="flex items-center justify-between text-xs font-body">
+                          <span>{r.name}</span>
+                          <span className="text-muted-foreground font-mono text-[10px]">
+                            {r.joined_at ? new Date(r.joined_at).toLocaleDateString() : ''}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </Card>
+            </motion.section>
+          )}
 
           {/* Footer CTA */}
           <motion.section

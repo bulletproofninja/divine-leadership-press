@@ -1,0 +1,43 @@
+{
+  "summary": "Iteration 12 (affiliate/referral) — backend (9 pytest cases) + frontend Playwright coverage of LandingPage prefill, register w/ fake code, /help referral-card, copy, unauth gating. 8/9 backend pass. 1 critical backend bug: legacy backfill in /api/auth/me is dead code — Pydantic default_factory regenerates referral_code every load so it never persists and returns a different code on each call.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/auth/me  (and GET /api/auth/me/referrals)",
+        "issue": "Legacy backfill never runs. User.referral_code is declared `str = Field(default_factory=_generate_referral_code)` (non-Optional with default factory), so when a user document loaded from mongo lacks the field, Pydantic silently generates a fresh value. The `if not current_user.referral_code:` guard is therefore always False, the db.users.update_one(...) backfill is never executed, and every subsequent /auth/me call returns a DIFFERENT random code for the same user. Verified: 3 consecutive /auth/me calls on a legacy user returned ['TPRQMY4Z','XCPPZWIU','EEAPOQHS']. Direct mongo read after the call shows referral_code field still missing. Impact: legacy users can never reliably share a stable referral link; their /api/auth/me/referrals will also report total_referred=0 because no one is `referred_by` an ephemeral code.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_referrals.py",
+    "/app/test_reports/pytest/iter12_referrals.xml"
+  ],
+  "action_items": [
+    "Fix legacy backfill in /api/auth/me. Recommended approach: change `referral_code: str = Field(default_factory=_generate_referral_code)` to `referral_code: Optional[str] = None` on the User model, and explicitly populate it in the register endpoint (and in get_me when missing). Then the `if not current_user.referral_code` check inside get_me will actually trigger the update_one. Alternative: in get_me, read the raw mongo doc first (without Pydantic) and check `doc.get('referral_code')` before constructing the User. After fix, retest TestLegacyBackfill::test_backfill_on_me — it currently asserts the field is persisted post-call."
+  ],
+  "critical_code_review_comments": [
+    "User.referral_code field uses a default_factory but is non-Optional — this is the root cause of the silent backfill failure and a common Pydantic+Mongo pitfall.",
+    "Same Pydantic pitfall pattern: any future field added with default_factory will exhibit identical ‘phantom backfill’ behavior. Consider documenting a convention (Optional[X]=None + explicit assignment) for fields that are intended to be persisted-on-first-write.",
+    "server.py is now ~1600 lines — should be split into routers (auth, documents, voice, exports, referrals) per the 700-line guideline."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_referrals.py"
+  ],
+  "success_rate": {
+    "backend": "89%",
+    "frontend": "100%"
+  },
+  "test_credentials": "Fresh users registered per test run, password TestPass123!. No /app/memory/test_credentials.md exists.",
+  "seed_data_creation": "Test users with TEST_ref_* prefix registered against the public API. Not cleaned up — recommend periodic cleanup of TEST_* in users collection.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run `pytest /app/backend/tests/test_referrals.py -v` after backfill fix. The TestLegacyBackfill test does $unset on mongo then expects /api/auth/me to persist a code AND that code to be stable across calls. All other 8 cases (unique codes, attribution Alice/Bob/Carol, invalid-code silent fallback, /me/referrals 401 unauth, /me includes code, elevenlabs PUT/DELETE regression, doc creation regression) already pass. Frontend testids in use: register-referral-input, referral-card, referral-code-display, referral-total-count, referral-link-input, referral-copy-btn, referral-share-btn, help-toc-share.",
+  "rca of the issue": "Root cause: Pydantic v2 `Field(default_factory=...)` on a non-Optional field always materializes a value at model construction. When a legacy mongo document missing `referral_code` is loaded via `User(**doc)` in get_me(), the factory fires and gives `current_user.referral_code` a fresh random value. The subsequent `if not current_user.referral_code:` check is therefore vacuously False and the `db.users.update_one({...}, {'$set': {'referral_code': ...}})` line is never reached. Reproduction: register user → mongo `$unset` referral_code → call /api/auth/me three times → returns three different 8-char codes; mongo doc still missing the field. Mitigation: either (a) `referral_code: Optional[str] = None` on User and explicitly set it in /register + on first /me read, or (b) bypass Pydantic for the raw read in get_me to inspect the actual stored value before deciding to backfill."
+}

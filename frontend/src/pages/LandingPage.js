@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { BookOpen, FileText, Download, Globe, Sparkles, Eye, BarChart } from 'lucide-react';
 import { Button } from '../components/ui/button';
@@ -20,8 +20,23 @@ export default function LandingPage({ onLogin }) {
   const [formData, setFormData] = useState({
     email: '',
     password: '',
-    name: ''
+    name: '',
+    referral_code: '',
   });
+  const [referralFromUrl, setReferralFromUrl] = useState('');
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const ref = params.get('ref');
+    if (ref) {
+      const cleaned = ref.trim().toUpperCase().slice(0, 16);
+      setReferralFromUrl(cleaned);
+      setFormData((p) => ({ ...p, referral_code: cleaned }));
+      // Auto-open the register tab when arriving via a referral link
+      setIsLogin(false);
+      setShowAuth(true);
+    }
+  }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -31,10 +46,15 @@ export default function LandingPage({ onLogin }) {
       const endpoint = isLogin ? '/auth/login' : '/auth/register';
       const payload = isLogin
         ? { email: formData.email, password: formData.password }
-        : formData;
+        : {
+            email: formData.email,
+            password: formData.password,
+            name: formData.name,
+            ...(formData.referral_code ? { referral_code: formData.referral_code } : {}),
+          };
 
       const response = await axios.post(`${API}${endpoint}`, payload);
-      
+
       toast.success(isLogin ? 'Welcome back!' : 'Account created successfully!');
       onLogin(response.data.token, response.data.user);
     } catch (error) {
@@ -290,6 +310,25 @@ export default function LandingPage({ onLogin }) {
                         onChange={(e) => setFormData({ ...formData, password: e.target.value })}
                         required
                       />
+                    </div>
+                    <div>
+                      <Label htmlFor="register-referral">
+                        Referral code <span className="text-muted-foreground font-normal">(optional)</span>
+                      </Label>
+                      <Input
+                        id="register-referral"
+                        data-testid="register-referral-input"
+                        type="text"
+                        placeholder="e.g. ABC12345"
+                        value={formData.referral_code}
+                        onChange={(e) => setFormData({ ...formData, referral_code: e.target.value.toUpperCase().slice(0, 16) })}
+                        className="font-mono"
+                      />
+                      {referralFromUrl && (
+                        <p className="text-[11px] text-emerald-700 mt-1">
+                          Invited by code <span className="font-mono font-semibold">{referralFromUrl}</span>
+                        </p>
+                      )}
                     </div>
                     <Button data-testid="register-submit-btn" type="submit" className="w-full rounded-sm" disabled={loading}>
                       {loading ? 'Creating account...' : 'Create Account'}
