@@ -109,6 +109,7 @@ class User(BaseModel):
     elevenlabs_api_key: Optional[str] = None
     referral_code: Optional[str] = None
     referred_by: Optional[str] = None  # the referral_code of whoever referred this user
+    is_super_admin: bool = False  # owner / platform admin
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class UserRegister(BaseModel):
@@ -441,6 +442,123 @@ async def my_referrals(current_user: User = Depends(get_current_user)):
         "total_referred": len(public),
         "recent": public[:20],
     }
+
+
+# --- AFFILIATE PROGRAM (settings + leaderboard) ---
+
+DEFAULT_AFFILIATE_SETTINGS = {
+    "enabled": True,
+    "reward_type": "credits",  # "credits" | "cash" | "perks" | "none"
+    "commission_percent": 0.0,  # 0 = tracking-only; payout requires Stripe Connect integration
+    "minimum_payout": 50.0,  # USD threshold for cash payouts (when enabled)
+    "qualifying_event": "signup",  # "signup" | "first_paid_subscription" | "first_book_published"
+    "reward_value": 0.0,  # e.g. "$5 credits per signup" when reward_type='credits'
+    "currency": "USD",
+    "notes": "",
+}
+
+
+async def _load_affiliate_settings() -> dict:
+    doc = await db.affiliate_settings.find_one({"_id": "global"}, {"_id": 0})
+    if not doc:
+        return dict(DEFAULT_AFFILIATE_SETTINGS)
+    merged = dict(DEFAULT_AFFILIATE_SETTINGS)
+    merged.update(doc)
+    return merged
+
+
+def _require_super_admin(current_user: User):
+    if not current_user.is_super_admin:
+        raise HTTPException(status_code=403, detail="Owner / super-admin only.")
+
+
+@api_router.get("/affiliate/settings")
+async def get_affiliate_settings_public():
+    """Public read-only view of the program settings (so authors know how they're rewarded)."""
+    settings = await _load_affiliate_settings()
+    # Strip internal-only fields if any are ever added
+    return settings
+
+
+class AffiliateSettings(BaseModel):
+    enabled: Optional[bool] = None
+    reward_type: Optional[str] = None
+    commission_percent: Optional[float] = None
+    minimum_payout: Optional[float] = None
+    qualifying_event: Optional[str] = None
+    reward_value: Optional[float] = None
+    currency: Optional[str] = None
+    notes: Optional[str] = None
+
+
+@api_router.put("/admin/affiliate/settings")
+async def update_affiliate_settings(
+    payload: AffiliateSettings,
+    current_user: User = Depends(get_current_user),
+):
+    _require_super_admin(current_user)
+    updates = {k: v for k, v in payload.model_dump().items() if v is not None}
+    if "reward_type" in updates and updates["reward_type"] not in ("credits", "cash", "perks", "none"):
+        raise HTTPException(status_code=400, detail="reward_type must be one of: credits, cash, perks, none")
+    if "qualifying_event" in updates and updates["qualifying_event"] not in (
+        "signup", "first_paid_subscription", "first_book_published"
+    ):
+        raise HTTPException(status_code=400, detail="qualifying_event must be one of: signup, first_paid_subscription, first_book_published")
+    if "commission_percent" in updates and not (0.0 <= updates["commission_percent"] <= 100.0):
+        raise HTTPException(status_code=400, detail="commission_percent must be between 0 and 100")
+    await db.affiliate_settings.update_one(
+        {"_id": "global"},
+        {"$set": updates},
+        upsert=True,
+    )
+    return await _load_affiliate_settings()
+
+
+@api_router.get("/referrals/leaderboard")
+async def referrals_leaderboard(limit: int = 10):
+    """Top N users by referral count. Public — authors want to see who's leading."""
+    limit = max(1, min(50, limit))
+    pipeline = [
+        {"$match": {"referred_by": {"$ne": None}}},
+        {"$group": {"_id": "$referred_by", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+        {"$limit": limit},
+    ]
+    grouped = await db.users.aggregate(pipeline).to_list(limit)
+    out = []
+    for entry in grouped:
+        code = entry["_id"]
+        referrer = await db.users.find_one(
+            {"referral_code": code}, {"_id": 0, "name": 1}
+        )
+        if referrer:
+            out.append({
+                "name": referrer.get("name", "Anonymous Author"),
+                "count": entry["count"],
+            })
+    return {"leaderboard": out}
+
+
+def _badge_tier(count: int) -> Optional[dict]:
+    if count >= 25:
+        return {"key": "founding_editor", "label": "Founding Editor", "min": 25}
+    if count >= 10:
+        return {"key": "patron", "label": "Patron of Letters", "min": 10}
+    if count >= 5:
+        return {"key": "advocate", "label": "Author Advocate", "min": 5}
+    if count >= 1:
+        return {"key": "ambassador", "label": "Ambassador", "min": 1}
+    return None
+
+
+@api_router.get("/auth/me/badge")
+async def my_affiliate_badge(current_user: User = Depends(get_current_user)):
+    """Return the badge tier earned by this user's referral activity."""
+    code = current_user.referral_code
+    if not code:
+        return {"badge": None, "count": 0}
+    count = await db.users.count_documents({"referred_by": code})
+    return {"badge": _badge_tier(count), "count": count}
 
 
 class ElevenLabsKeyRequest(BaseModel):

@@ -1,0 +1,54 @@
+{
+  "summary": "Iteration 14 — Affiliate program (leaderboard + badges + admin settings foundation) fully verified. 16/16 new backend tests pass, 9/9 referral regression tests pass, and all required HelpPage UI behaviors confirmed across unauth, auth-with-0-referrals, and auth-with-1-referral states.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_affiliate.py",
+    "/app/test_reports/pytest/iter14_affiliate.xml",
+    "/app/test_reports/pytest/iter14_referrals_regression.xml"
+  ],
+  "backend_tests_covered": [
+    "GET /api/affiliate/settings — public, returns default settings with reward_type='credits', qualifying_event='signup'",
+    "PUT /api/admin/affiliate/settings unauthenticated → 401",
+    "PUT /api/admin/affiliate/settings as non-super-admin → 403 with 'super-admin' message",
+    "PUT /api/admin/affiliate/settings as super-admin (mongo flip is_super_admin=true + re-login) → 200, persists, public GET reflects update; snapshot+restore around each write so default state is preserved",
+    "PUT with reward_type='bitcoin' → 400",
+    "PUT with commission_percent=120 → 400 'must be between 0 and 100'",
+    "PUT with qualifying_event='click' → 400",
+    "GET /api/referrals/leaderboard — public, returns sorted desc, name (not email/code), limit clamped to [1, 50], multi-inviter ordering correct",
+    "GET /api/auth/me/badge unauthenticated → 401",
+    "GET /api/auth/me/badge with 0 referrals → {badge: null, count: 0}",
+    "GET /api/auth/me/badge after 1 real referral → badge.key='ambassador', label='Ambassador', count=1",
+    "GET /api/auth/me/badge after 5 fake referees inserted directly in mongo → badge.key='advocate', label='Author Advocate', count=5; cleanup deletes fake users",
+    "Regression: /auth/register, /auth/me, /auth/me/referrals still work and return referral_code"
+  ],
+  "frontend_tests_covered": [
+    "Unauth /help: leaderboard-card visible with 9 rows; first row rank '1' has amber-100/amber-300 classes; first entry shows real name 'Alice the Inviter' (not code/email); help-toc-leaderboard visible; help-toc-share NOT rendered; referral-card NOT rendered",
+    "Auth user with 0 referrals: referral-card renders, referral-badge NOT rendered, program-rules card renders with 'Reward type: credits' and 'Qualifying event: signup' from /affiliate/settings, help-toc-share renders",
+    "Auth user with 1 invite via referral_code: referral-badge renders with text 'Your badge / Ambassador / Earned for inviting 1 author.' (singular form correct)"
+  ],
+  "critical_code_review_comments": [
+    "DEFAULT_AFFILIATE_SETTINGS has enabled=True by default, which is fine for tracking-only mode (commission_percent=0). Consider future-proofing: when commission_percent>0, payouts would need Stripe Connect — current implementation correctly notes this in a comment.",
+    "/api/admin/affiliate/settings has no rate-limiting/audit log. For an owner-only endpoint this is acceptable but a one-line audit log entry per update would be valuable when payout logic is added in the next iteration.",
+    "Leaderboard does a per-row find_one for the referrer name (N+1). With limit clamped to 50 this is fine but a single $lookup join would be cleaner long-term.",
+    "Badge endpoint recomputes count on every call via count_documents. Cheap for now; consider caching denormalised on User.referral_count when admin UI lands.",
+    "is_super_admin must be granted manually via mongo (no UI endpoint to elevate users) — by design per problem statement and the safest pattern. Document this in admin runbook."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_affiliate.py (new — 16 tests, 6 classes)"
+  ],
+  "success_rate": {"backend": "100% (16/16 new + 9/9 regression)", "frontend": "100% (all 3 HelpPage states verified)"},
+  "test_credentials": "All test users registered on the fly with TEST_ prefix and password TestPass123!. Super-admin flag flipped via direct mongo update (MONGO_URL + DB_NAME from env).",
+  "seed_data_creation": "Tests register 5+ fresh users per run with TEST_ prefix; inserts 5 fake referee docs for the Author Advocate badge test and cleans them up via mongo afterwards. Super-admin settings tests snapshot the affiliate_settings._id='global' doc and restore it after each mutation.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iter14 fully green. When the admin UI lands in the next iteration, add UI tests for: (1) hiding the admin panel from non-super-admin accounts, (2) toast/error feedback on the three 400 validation paths (invalid reward_type, commission_percent out of range, invalid qualifying_event), (3) live-reflecting the saved values in /help program-rules without a hard refresh. The leaderboard test seeds names like 'LB_Alice', 'LB_Bob', 'Alice the Inviter' — those will accumulate across runs; the test only asserts presence + sort-desc, not exact counts, so it's safe.",
+  "rca_of_the_issue": "N/A — feature addition, no bugs found."
+}

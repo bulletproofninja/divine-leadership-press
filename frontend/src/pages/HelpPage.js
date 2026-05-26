@@ -9,7 +9,7 @@ import { Input } from '../components/ui/input';
 import {
   ArrowLeft, Upload, FileText, ImageIcon, BookOpen, Sparkles, ScanSearch,
   Mic, Headphones, FileDown, History, MessageSquare, Layers, Globe, FileType,
-  Lightbulb, Shield, HelpCircle, Share2, Copy, Users,
+  Lightbulb, Shield, HelpCircle, Share2, Copy, Users, Trophy, Award,
 } from 'lucide-react';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -183,13 +183,25 @@ export default function HelpPage() {
   const navigate = useNavigate();
   const [referral, setReferral] = useState(null);
   const [copying, setCopying] = useState(false);
+  const [leaderboard, setLeaderboard] = useState([]);
+  const [myBadge, setMyBadge] = useState(null);
+  const [programSettings, setProgramSettings] = useState(null);
   const isAuthed = !!localStorage.getItem('token');
 
   useEffect(() => {
+    axios.get(`${API}/referrals/leaderboard?limit=10`)
+      .then((r) => setLeaderboard(r.data.leaderboard || []))
+      .catch(() => setLeaderboard([]));
+    axios.get(`${API}/affiliate/settings`)
+      .then((r) => setProgramSettings(r.data))
+      .catch(() => setProgramSettings(null));
     if (!isAuthed) return;
     axios.get(`${API}/auth/me/referrals`, getAuthHeaders())
       .then((r) => setReferral(r.data))
       .catch(() => setReferral(null));
+    axios.get(`${API}/auth/me/badge`, getAuthHeaders())
+      .then((r) => setMyBadge(r.data))
+      .catch(() => setMyBadge(null));
   }, [isAuthed]);
 
   const referralUrl = referral
@@ -272,6 +284,15 @@ export default function HelpPage() {
                 className="block py-1.5 px-2 text-sm font-body text-primary hover:bg-accent/40 rounded-sm transition-colors mt-2 pt-2 border-t"
               >
                 Share & Refer
+              </a>
+            )}
+            {leaderboard.length > 0 && (
+              <a
+                href="#leaderboard"
+                data-testid="help-toc-leaderboard"
+                className="block py-1.5 px-2 text-sm font-body text-amber-700 hover:bg-accent/40 rounded-sm transition-colors"
+              >
+                Top Inviters
               </a>
             )}
           </div>
@@ -453,6 +474,103 @@ export default function HelpPage() {
                     </ul>
                   </div>
                 )}
+
+                {/* User's earned badge */}
+                {myBadge?.badge && (
+                  <div
+                    data-testid="referral-badge"
+                    className="mt-4 pt-4 border-t flex items-center gap-3"
+                  >
+                    <div className="p-2 rounded-sm bg-amber-50 border border-amber-200 text-amber-700">
+                      <Award className="h-5 w-5" />
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wider font-mono text-muted-foreground">
+                        Your badge
+                      </div>
+                      <div className="text-sm font-heading font-semibold">
+                        {myBadge.badge.label}
+                      </div>
+                      <div className="text-[11px] text-muted-foreground">
+                        Earned for inviting {myBadge.count} author{myBadge.count === 1 ? '' : 's'}.
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Program rules */}
+                {programSettings && (
+                  <div data-testid="program-rules" className="mt-4 pt-4 border-t text-[11px] text-muted-foreground">
+                    <div className="uppercase tracking-wider font-mono mb-1">Program rules</div>
+                    <ul className="list-disc pl-4 space-y-0.5">
+                      <li>Reward type: <span className="font-medium text-foreground">{programSettings.reward_type}</span></li>
+                      <li>Qualifying event: <span className="font-medium text-foreground">{programSettings.qualifying_event.replace(/_/g, ' ')}</span></li>
+                      {programSettings.commission_percent > 0 && (
+                        <li>Commission: <span className="font-medium text-foreground">{programSettings.commission_percent}%</span></li>
+                      )}
+                      {programSettings.reward_value > 0 && (
+                        <li>Per qualifying invite: <span className="font-medium text-foreground">{programSettings.currency} {programSettings.reward_value}</span></li>
+                      )}
+                      {programSettings.notes && (
+                        <li>{programSettings.notes}</li>
+                      )}
+                    </ul>
+                  </div>
+                )}
+              </Card>
+            </motion.section>
+          )}
+
+          {/* Leaderboard — visible to everyone */}
+          {leaderboard.length > 0 && (
+            <motion.section
+              initial={{ opacity: 0, y: 10 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true, margin: '-100px' }}
+              transition={{ duration: 0.4 }}
+              data-testid="leaderboard-card"
+              className="scroll-mt-28"
+              id="leaderboard"
+            >
+              <div className="flex items-center gap-3 mb-2">
+                <div className="p-2 rounded-sm bg-amber-50 text-amber-700 border border-amber-200">
+                  <Trophy className="h-5 w-5" />
+                </div>
+                <span className="text-[10px] uppercase tracking-[0.22em] font-mono text-muted-foreground">
+                  Top Inviters
+                </span>
+              </div>
+              <h2 className="text-2xl sm:text-3xl font-heading font-semibold mb-1">
+                Authors building the DLP community
+              </h2>
+              <p className="text-sm text-muted-foreground italic font-body mb-5">
+                The most prolific inviters this season.
+              </p>
+              <Card className="p-6 bg-card/60 backdrop-blur-sm border-l-4 border-l-amber-400 rounded-sm">
+                <ol data-testid="leaderboard-list" className="space-y-2">
+                  {leaderboard.map((entry, idx) => (
+                    <li
+                      key={idx}
+                      data-testid={`leaderboard-row-${idx}`}
+                      className="flex items-center justify-between gap-3 py-1.5 border-b last:border-0"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <span className={`flex items-center justify-center h-7 w-7 rounded-sm font-mono text-xs font-semibold ${
+                          idx === 0 ? 'bg-amber-100 text-amber-800 border border-amber-300' :
+                          idx === 1 ? 'bg-zinc-100 text-zinc-800 border border-zinc-300' :
+                          idx === 2 ? 'bg-orange-50 text-orange-800 border border-orange-200' :
+                          'bg-muted text-muted-foreground border border-border'
+                        }`}>
+                          {idx + 1}
+                        </span>
+                        <span className="font-body text-sm truncate">{entry.name}</span>
+                      </div>
+                      <span className="text-sm font-mono font-semibold text-primary flex-shrink-0">
+                        {entry.count} <span className="font-normal text-muted-foreground">invited</span>
+                      </span>
+                    </li>
+                  ))}
+                </ol>
               </Card>
             </motion.section>
           )}
