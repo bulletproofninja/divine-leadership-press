@@ -55,6 +55,13 @@ A book publishing / writing application that allows users to upload a Word doc, 
   - Transcripts cached after first Whisper call (subsequent inserts re-use cached text)
   - Storage: file on disk under `/app/backend/uploads/memos/{user_id}/{document_id}/`, metadata in `document.memos` array
 - [x] **Help & Documentation page** (`/help`, public route): 13 sections covering every major feature (Getting Started, Pipeline, Upload, Editor, Book Setup, Editor's Desk, AI Polish, Dictation, Voice Memos, Audio Studio, Export, Privacy, Tips). Sticky TOC sidebar, motion-animated section reveals, **bold** markdown rendering. Help links in Dashboard + Editor headers.
+- [x] **Referral / Affiliate system**:
+  - Every user gets an 8-char `referral_code` on registration
+  - `?ref=CODE` URL param auto-opens the register tab and pre-fills the code
+  - Optional code field on the register form
+  - `GET /api/auth/me/referrals` returns code, total invited count, and recent invitee names (no emails leaked)
+  - "Share & Refer" card in `/help` footer (authenticated users only) with copy-link, native share, and a recent-invitees list
+  - Legacy backfill: any pre-existing user without a code gets one on next `/auth/me` call (Pydantic Optional + explicit set fix)
 - [x] Backend pytest suites (113 tests, 100% pass):
   - `/app/backend/tests/test_upload_export.py` (14)
   - `/app/backend/tests/test_ai_editorial.py` (8)
