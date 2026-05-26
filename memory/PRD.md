@@ -35,16 +35,16 @@ A book publishing / writing application that allows users to upload a Word doc, 
   - Accept All / Reject All / severity filter
   - Style-guide selector: Chicago Manual / AP / MLA / DLP House Style
   - Local readability metrics: Flesch-Kincaid grade, avg sentence length, passive %, adverb density, longest-sentence callout
-- [x] **Audio Studio — Read Aloud + Audiobook MP3** (OpenAI tts-1-hd via Emergent key):
-  - 9 narrator voices (alloy/ash/coral/echo/fable/nova/onyx/sage/shimmer)
-  - Author-controlled speed 0.5×–2.0× (slider)
-  - Read Aloud preview (first ~1500 chars, in-browser playback)
-  - Full audiobook MP3 download (chunked + concatenated, manuscripts up to ~17K words)
-- [x] Backend pytest suites (44 tests total, 100% pass):
+- [x] **Audio Studio — Read Aloud + Audiobook MP3** (3 provider tabs):
+  - **OpenAI TTS HD** (Emergent key): 9 voices, speed 0.5×–2.0×, in-browser preview, full audiobook MP3 download
+  - **ElevenLabs** (per-user key in user profile): stock voice library + custom cloned Voice ID, preview, premium audiobook download
+  - **Uploaded MP3**: author uploads a finished audio file (mp3/wav/m4a/ogg/flac, ≤200 MB), playable in-browser, removable
+- [x] Backend pytest suites (66 tests total, 100% pass):
   - `/app/backend/tests/test_upload_export.py` (14)
   - `/app/backend/tests/test_ai_editorial.py` (8)
   - `/app/backend/tests/test_copyedit.py` (11)
   - `/app/backend/tests/test_audio_studio.py` (11)
+  - `/app/backend/tests/test_elevenlabs_upload.py` (22)
 
 ## Architecture
 ```

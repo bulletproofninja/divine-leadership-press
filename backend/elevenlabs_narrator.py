@@ -135,19 +135,20 @@ def _synthesise(
                 use_speaker_boost=True,
             ),
         )
+        audio = b""
+        for chunk in gen:
+            if chunk:
+                audio += chunk
+        if not audio:
+            raise ElevenLabsServiceError("ElevenLabs returned empty audio.")
+        return audio
+    except ElevenLabsServiceError:
+        raise
     except Exception as exc:  # noqa: BLE001
         msg = str(exc).lower()
-        if "unauthorized" in msg or "invalid api key" in msg or "401" in msg:
+        if "unauthorized" in msg or "invalid api key" in msg or "401" in msg or "invalid_api_key" in msg:
             raise ElevenLabsAuthError("ElevenLabs API key was rejected. Check the key in your settings.")
         raise ElevenLabsServiceError(f"ElevenLabs TTS failed: {exc}")
-
-    audio = b""
-    for chunk in gen:
-        if chunk:
-            audio += chunk
-    if not audio:
-        raise ElevenLabsServiceError("ElevenLabs returned empty audio.")
-    return audio
 
 
 def narrate_text(
