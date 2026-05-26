@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
-import { ArrowLeft, Save, Download, History, MessageSquare, Settings, Eye, Globe, Loader2, FileType, BookOpen, Sparkles, Check, X, ScanSearch, AlertCircle, Lightbulb, FileSearch, Headphones, Play, Pause, ImageIcon, Trash2, Mic, MicOff, FileDown } from 'lucide-react';
+import { ArrowLeft, Save, Download, History, MessageSquare, Settings, Eye, Globe, Loader2, FileType, BookOpen, Sparkles, Check, X, ScanSearch, AlertCircle, Lightbulb, FileSearch, Headphones, Play, Pause, ImageIcon, Trash2, Mic, MicOff, FileDown, HelpCircle } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -1257,6 +1257,16 @@ export default function EditorPage({ user }) {
             />
           </div>
           <div className="flex items-center gap-2">
+            <Button
+              data-testid="help-link-editor"
+              variant="ghost"
+              size="sm"
+              onClick={() => navigate('/help')}
+              className="rounded-sm hidden sm:flex"
+              title="Help & Documentation"
+            >
+              <HelpCircle className="h-4 w-4" />
+            </Button>
             <Button
               data-testid="preview-btn"
               variant="outline"

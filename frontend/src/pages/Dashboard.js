@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Plus, FileText, Upload, LogOut, Search, Calendar, File, Trash2, Edit, ImageIcon, BookOpen, FileType, Headphones } from 'lucide-react';
+import { Plus, FileText, Upload, LogOut, Search, Calendar, File, Trash2, Edit, ImageIcon, BookOpen, FileType, Headphones, HelpCircle } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Card } from '../components/ui/card';
@@ -220,6 +220,17 @@ export default function Dashboard({ user, onLogout }) {
             <span className="text-sm font-body text-muted-foreground hidden sm:block">
               Welcome, <span className="text-foreground font-medium">{user.name}</span>
             </span>
+            <Button
+              data-testid="help-link-dashboard"
+              variant="ghost"
+              size="sm"
+              onClick={() => navigate('/help')}
+              className="rounded-sm"
+              title="Help & Documentation"
+            >
+              <HelpCircle className="h-4 w-4 sm:mr-1.5" />
+              <span className="hidden sm:inline">Help</span>
+            </Button>
             <Button data-testid="logout-btn" variant="ghost" size="sm" onClick={onLogout} className="rounded-sm">
               <LogOut className="h-4 w-4" />
             </Button>

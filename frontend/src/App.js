@@ -5,6 +5,7 @@ import { useState, useEffect } from 'react';
 import LandingPage from './pages/LandingPage';
 import Dashboard from './pages/Dashboard';
 import EditorPage from './pages/EditorPage';
+import HelpPage from './pages/HelpPage';
 import { Toaster } from './components/ui/sonner';
 
 function App() {
@@ -76,6 +77,7 @@ function App() {
               )
             }
           />
+          <Route path="/help" element={<HelpPage />} />
         </Routes>
       </BrowserRouter>
       <Toaster />
