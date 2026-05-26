@@ -58,6 +58,13 @@ from cover_uploads import (
     media_type_for as cover_media_type,
     ALLOWED_EXTENSIONS as COVER_ALLOWED_EXTENSIONS,
 )
+from voice_memos import (
+    save_memo as save_voice_memo,
+    find_memo_file,
+    delete_memo_file,
+    media_type_for as memo_media_type,
+    ALLOWED_EXTENSIONS as MEMO_ALLOWED_EXTENSIONS,
+)
 from transcription import transcribe_audio
 from image_to_pdf import image_to_pdf
 
@@ -144,6 +151,16 @@ class Version(BaseModel):
     created_by: str
     version_number: int
 
+class VoiceMemo(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    title: Optional[str] = None
+    paragraph_index: Optional[int] = None  # 0-based block index in the manuscript, when set
+    ext: str
+    size_bytes: int
+    transcript: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class DocumentModel(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -159,6 +176,7 @@ class DocumentModel(BaseModel):
     last_audio_export_at: Optional[datetime] = None
     versions: List[Version] = Field(default_factory=list)
     comments: List[Comment] = Field(default_factory=list)
+    memos: List[VoiceMemo] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -1192,6 +1210,147 @@ async def generic_image_to_pdf(
             "X-Trim-Size": trim,
         },
     )
+
+
+# --- VOICE MEMOS (per-paragraph audio annotations) ---
+
+@api_router.post("/documents/{document_id}/memos")
+async def create_voice_memo(
+    document_id: str,
+    file: UploadFile = File(...),
+    paragraph_index: Optional[int] = None,
+    title: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+):
+    doc = await db.documents.find_one(
+        {"id": document_id, "user_id": current_user.id}, {"_id": 0}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    data = await file.read()
+    memo_id = str(uuid.uuid4())
+    try:
+        path, ext = save_voice_memo(current_user.id, document_id, memo_id, file.filename or "memo.webm", data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    memo = VoiceMemo(
+        id=memo_id,
+        title=(title or None),
+        paragraph_index=paragraph_index,
+        ext=ext,
+        size_bytes=path.stat().st_size,
+    )
+    memo_doc = memo.model_dump()
+    memo_doc["created_at"] = memo_doc["created_at"].isoformat()
+
+    await db.documents.update_one(
+        {"id": document_id},
+        {
+            "$push": {"memos": memo_doc},
+            "$set": {"updated_at": datetime.now(timezone.utc).isoformat()},
+        },
+    )
+    return memo_doc
+
+
+@api_router.get("/documents/{document_id}/memos")
+async def list_voice_memos(
+    document_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    doc = await db.documents.find_one(
+        {"id": document_id, "user_id": current_user.id}, {"_id": 0, "memos": 1}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"memos": doc.get("memos", [])}
+
+
+@api_router.get("/documents/{document_id}/memos/{memo_id}")
+async def fetch_voice_memo_audio(
+    document_id: str,
+    memo_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    doc = await db.documents.find_one(
+        {"id": document_id, "user_id": current_user.id}, {"_id": 0}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    found = find_memo_file(current_user.id, document_id, memo_id)
+    if not found:
+        raise HTTPException(status_code=404, detail="Memo audio not found")
+    path, ext = found
+    return Response(
+        content=path.read_bytes(),
+        media_type=memo_media_type(ext),
+        headers={"Cache-Control": "private, max-age=60"},
+    )
+
+
+@api_router.post("/documents/{document_id}/memos/{memo_id}/transcribe")
+async def transcribe_voice_memo(
+    document_id: str,
+    memo_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    doc = await db.documents.find_one(
+        {"id": document_id, "user_id": current_user.id}, {"_id": 0}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    # If we already transcribed this memo, return the cached transcript
+    memos = doc.get("memos") or []
+    memo_record = next((m for m in memos if m.get("id") == memo_id), None)
+    if memo_record and memo_record.get("transcript"):
+        return {"text": memo_record["transcript"], "cached": True}
+
+    found = find_memo_file(current_user.id, document_id, memo_id)
+    if not found:
+        raise HTTPException(status_code=404, detail="Memo audio not found")
+    path, ext = found
+
+    try:
+        text = await transcribe_audio(
+            data=path.read_bytes(),
+            filename=f"memo.{ext}",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Voice-memo transcription failed")
+        raise HTTPException(status_code=502, detail=f"Transcription service error: {exc}")
+
+    await db.documents.update_one(
+        {"id": document_id, "memos.id": memo_id},
+        {"$set": {"memos.$.transcript": text}},
+    )
+    return {"text": text, "cached": False}
+
+
+@api_router.delete("/documents/{document_id}/memos/{memo_id}")
+async def delete_voice_memo(
+    document_id: str,
+    memo_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    doc = await db.documents.find_one(
+        {"id": document_id, "user_id": current_user.id}, {"_id": 0}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    delete_memo_file(current_user.id, document_id, memo_id)
+    result = await db.documents.update_one(
+        {"id": document_id},
+        {
+            "$pull": {"memos": {"id": memo_id}},
+            "$set": {"updated_at": datetime.now(timezone.utc).isoformat()},
+        },
+    )
+    return {"deleted": result.modified_count > 0}
 
 
 # --- DICTATION (Whisper STT) ---

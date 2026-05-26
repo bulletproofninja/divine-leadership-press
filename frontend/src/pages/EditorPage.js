@@ -43,6 +43,82 @@ const CATEGORY_LABELS = {
   tone: 'Tone',
 };
 
+function VoiceMemoCard({ memo, audioUrl, transcribing, onLoadAudio, onTranscribe, onDelete }) {
+  const ts = memo.created_at ? new Date(memo.created_at) : null;
+  return (
+    <div data-testid={`memo-${memo.id}`} className="border rounded-sm p-2 bg-card hover:bg-accent/30 transition-colors">
+      <div className="flex items-center justify-between mb-1 gap-2">
+        <div className="flex items-center gap-2 min-w-0 flex-1">
+          <span className="text-xs font-medium truncate">{memo.title || 'Untitled memo'}</span>
+          {memo.paragraph_index !== null && memo.paragraph_index !== undefined && (
+            <span className="text-[10px] font-mono text-muted-foreground flex-shrink-0">
+              ¶{memo.paragraph_index + 1}
+            </span>
+          )}
+        </div>
+        <span className="text-[10px] uppercase tracking-wider font-mono text-muted-foreground flex-shrink-0">
+          {ts ? ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
+        </span>
+      </div>
+
+      {audioUrl ? (
+        <audio
+          data-testid={`memo-player-${memo.id}`}
+          controls
+          src={audioUrl}
+          className="w-full h-7 mb-2"
+        >
+          <track kind="captions" />
+        </audio>
+      ) : (
+        <Button
+          data-testid={`memo-load-${memo.id}`}
+          size="sm"
+          variant="outline"
+          className="w-full rounded-sm h-7 text-xs mb-2"
+          onClick={onLoadAudio}
+        >
+          <Play className="h-3 w-3 mr-1" /> Load &amp; Play
+        </Button>
+      )}
+
+      {memo.transcript && (
+        <div className="text-[11px] text-muted-foreground italic mb-2 line-clamp-3">
+          “{memo.transcript}”
+        </div>
+      )}
+
+      <div className="flex gap-1">
+        <Button
+          data-testid={`memo-transcribe-${memo.id}`}
+          size="sm"
+          variant="outline"
+          className="flex-1 rounded-sm h-7 text-[11px]"
+          disabled={transcribing}
+          onClick={onTranscribe}
+        >
+          {transcribing ? (
+            <><Loader2 className="h-3 w-3 mr-1 animate-spin" /> Transcribing…</>
+          ) : memo.transcript ? (
+            'Insert into manuscript'
+          ) : (
+            'Transcribe & Insert'
+          )}
+        </Button>
+        <Button
+          data-testid={`memo-delete-${memo.id}`}
+          size="sm"
+          variant="ghost"
+          className="rounded-sm h-7 px-2"
+          onClick={onDelete}
+        >
+          <Trash2 className="h-3 w-3 text-destructive" />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function CopyEditIssueCard({ issue, onAccept, onReject }) {
   const sev = SEVERITY_BADGES[issue.severity] || SEVERITY_BADGES.suggested;
   return (
@@ -153,6 +229,14 @@ export default function EditorPage({ user }) {
   const [uploadingCover, setUploadingCover] = useState(false);
   const [savingMetadata, setSavingMetadata] = useState(false);
   const [downloadingCoverPdf, setDownloadingCoverPdf] = useState(false);
+  // Voice Memos
+  const [memos, setMemos] = useState([]);
+  const [memoRecording, setMemoRecording] = useState(false);
+  const [memoSaving, setMemoSaving] = useState(false);
+  const [memoAudioUrls, setMemoAudioUrls] = useState({}); // memoId -> blob URL
+  const [memoTranscribing, setMemoTranscribing] = useState(null); // memoId currently transcribing
+  const memoRecorderRef = useRef(null);
+  const memoStreamRef = useRef(null);
   // Dictation
   const [isRecording, setIsRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
@@ -170,6 +254,7 @@ export default function EditorPage({ user }) {
     fetchTrimSizes();
     loadElevenLabsStatus();
     fetchUploadedInfo();
+    fetchMemos();
   }, [documentId]);
 
   const fetchTrimSizes = async () => {
@@ -943,6 +1028,158 @@ export default function EditorPage({ user }) {
     setDictationHistory([]);
   };
 
+  // --- Voice Memos ---
+  const fetchMemos = async () => {
+    try {
+      const r = await axios.get(`${API}/documents/${documentId}/memos`, getAuthHeaders());
+      setMemos(r.data.memos || []);
+    } catch (_) {}
+  };
+
+  // Estimate current paragraph index based on Quill cursor position
+  const getCurrentParagraphIndex = () => {
+    const editor = quillRef.current?.getEditor?.();
+    if (!editor) return null;
+    const sel = editor.getSelection();
+    if (!sel) return null;
+    const fullText = editor.getText().slice(0, sel.index);
+    // Quill represents blocks separated by \n; an empty paragraph is also a \n
+    const blockIndex = (fullText.match(/\n/g) || []).length;
+    return blockIndex;
+  };
+
+  const startMemoRecording = async () => {
+    if (memoRecording || memoSaving) return;
+    if (!navigator.mediaDevices?.getUserMedia) {
+      toast.error('Microphone is not available in this browser');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      memoStreamRef.current = stream;
+      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/webm')
+          ? 'audio/webm'
+          : 'audio/ogg';
+      const recorder = new MediaRecorder(stream, { mimeType: mime });
+      const chunks = [];
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) chunks.push(e.data);
+      };
+      recorder.onstop = async () => {
+        if (memoStreamRef.current) {
+          memoStreamRef.current.getTracks().forEach((t) => t.stop());
+          memoStreamRef.current = null;
+        }
+        setMemoRecording(false);
+        const blob = new Blob(chunks, { type: mime });
+        if (blob.size < 256) {
+          toast.error('Memo too short — try again');
+          return;
+        }
+        setMemoSaving(true);
+        try {
+          const fd = new FormData();
+          const filename = mime.includes('ogg') ? 'memo.ogg' : 'memo.webm';
+          fd.append('file', blob, filename);
+          const paraIdx = getCurrentParagraphIndex();
+          const defaultTitle = `Memo ${new Date().toLocaleString([], {
+            month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+          })}`;
+          const qs = new URLSearchParams();
+          qs.set('title', defaultTitle);
+          if (paraIdx !== null) qs.set('paragraph_index', String(paraIdx));
+          const r = await axios.post(
+            `${API}/documents/${documentId}/memos?${qs.toString()}`,
+            fd,
+            {
+              ...getAuthHeaders(),
+              headers: { ...getAuthHeaders().headers, 'Content-Type': 'multipart/form-data' },
+            }
+          );
+          toast.success('Voice memo saved');
+          setMemos((prev) => [r.data, ...prev]);
+        } catch (error) {
+          toast.error(error.response?.data?.detail || 'Could not save memo');
+        } finally {
+          setMemoSaving(false);
+        }
+      };
+      memoRecorderRef.current = recorder;
+      recorder.start();
+      setMemoRecording(true);
+      toast.success('Recording memo — click again to stop');
+    } catch (error) {
+      toast.error(error.message || 'Microphone permission denied');
+    }
+  };
+
+  const stopMemoRecording = () => {
+    const recorder = memoRecorderRef.current;
+    if (recorder && recorder.state === 'recording') {
+      recorder.stop();
+    }
+  };
+
+  const loadMemoAudio = async (memoId) => {
+    if (memoAudioUrls[memoId]) return memoAudioUrls[memoId];
+    try {
+      const r = await axios.get(`${API}/documents/${documentId}/memos/${memoId}`, {
+        ...getAuthHeaders(),
+        responseType: 'blob',
+      });
+      const url = window.URL.createObjectURL(r.data);
+      setMemoAudioUrls((prev) => ({ ...prev, [memoId]: url }));
+      return url;
+    } catch (_) {
+      toast.error('Could not load memo audio');
+      return null;
+    }
+  };
+
+  const transcribeAndInsertMemo = async (memo) => {
+    setMemoTranscribing(memo.id);
+    try {
+      const r = await axios.post(
+        `${API}/documents/${documentId}/memos/${memo.id}/transcribe`,
+        {},
+        { ...getAuthHeaders(), timeout: 180000 }
+      );
+      const text = (r.data?.text || '').trim();
+      if (!text) {
+        toast.error('Nothing detected in memo');
+        return;
+      }
+      insertAtCursor(text, `memo_${memo.id}`);
+      // Update transcript cache locally
+      setMemos((prev) => prev.map((m) => (m.id === memo.id ? { ...m, transcript: text } : m)));
+      toast.success('Memo transcribed and inserted');
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Transcription failed', { duration: 7000 });
+    } finally {
+      setMemoTranscribing(null);
+    }
+  };
+
+  const deleteMemo = async (memo) => {
+    try {
+      await axios.delete(`${API}/documents/${documentId}/memos/${memo.id}`, getAuthHeaders());
+      if (memoAudioUrls[memo.id]) {
+        window.URL.revokeObjectURL(memoAudioUrls[memo.id]);
+        setMemoAudioUrls((prev) => {
+          const next = { ...prev };
+          delete next[memo.id];
+          return next;
+        });
+      }
+      setMemos((prev) => prev.filter((m) => m.id !== memo.id));
+      toast.success('Memo deleted');
+    } catch (_) {
+      toast.error('Could not delete memo');
+    }
+  };
+
   const handlePublish = async (platform) => {
     try {
       const endpoint = platform === 'kdp' ? '/integrations/kdp' : '/integrations/lulu';
@@ -1352,6 +1589,55 @@ export default function EditorPage({ user }) {
                 </div>
               </Card>
             )}
+
+            {/* Voice Memos */}
+            <Card data-testid="voice-memos-panel" className="p-4 bg-card/50 backdrop-blur-sm">
+              <h3 className="text-sm font-heading font-semibold mb-2 flex items-center gap-2">
+                <Mic className="h-4 w-4 text-primary" />
+                Voice Memos
+              </h3>
+              <p className="text-xs text-muted-foreground mb-3 font-body">
+                Record raw audio notes anchored to a paragraph. Play them back later or transcribe-and-insert into the manuscript.
+              </p>
+
+              <Button
+                data-testid={memoRecording ? 'memo-stop-btn' : 'memo-record-btn'}
+                size="sm"
+                variant={memoRecording ? 'destructive' : 'default'}
+                className="w-full rounded-sm"
+                disabled={memoSaving}
+                onClick={memoRecording ? stopMemoRecording : startMemoRecording}
+              >
+                {memoSaving ? (
+                  <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Saving…</>
+                ) : memoRecording ? (
+                  <><MicOff className="h-4 w-4 mr-2" /> Stop & Save Memo</>
+                ) : (
+                  <><Mic className="h-4 w-4 mr-2" /> Record Voice Memo</>
+                )}
+              </Button>
+
+              {memos.length > 0 && (
+                <div className="mt-3 space-y-2 max-h-80 overflow-y-auto pr-1" data-testid="memos-list">
+                  {memos.map((memo) => (
+                    <VoiceMemoCard
+                      key={memo.id}
+                      memo={memo}
+                      audioUrl={memoAudioUrls[memo.id]}
+                      transcribing={memoTranscribing === memo.id}
+                      onLoadAudio={() => loadMemoAudio(memo.id)}
+                      onTranscribe={() => transcribeAndInsertMemo(memo)}
+                      onDelete={() => deleteMemo(memo)}
+                    />
+                  ))}
+                </div>
+              )}
+              {memos.length === 0 && !memoRecording && (
+                <p data-testid="memos-empty" className="mt-3 text-[11px] text-muted-foreground italic text-center">
+                  No memos yet — record one to get started.
+                </p>
+              )}
+            </Card>
 
             {/* Dictation History */}
             {dictationHistory.length > 0 && (
