@@ -49,7 +49,20 @@ A book publishing / writing application that allows users to upload a Word doc, 
 - [x] **Voice Dictation** (OpenAI Whisper via Emergent key): Dictate button in editor toolbar; MediaRecorder captures mic, sends to `/api/transcribe`, Whisper returns punctuated text, inserted at the Quill cursor position
 - [x] **Continuous Dictation Mode**: Switch toggle next to Dictate button — records in 30-second segments, transcribing each as it completes; pulsing red recording indicator inside the Dictation History panel
 - [x] **Dictation History panel** in editor sidebar: shows each transcribed chunk (timestamp + text) with per-chunk Undo (search-and-remove from manuscript) and Clear All buttons; renders only when history > 0
-- [x] Backend pytest suites (100 tests + iter-9 48-test regression run, 100% pass cumulative):
+- [x] **Voice Memos** (per-paragraph audio annotations):
+  - Record raw audio notes anchored to the cursor's current paragraph (auto-detected via Quill block index)
+  - List/play/transcribe-and-insert/delete per memo
+  - Transcripts cached after first Whisper call (subsequent inserts re-use cached text)
+  - Storage: file on disk under `/app/backend/uploads/memos/{user_id}/{document_id}/`, metadata in `document.memos` array
+- [x] Backend pytest suites (113 tests, 100% pass):
+  - `/app/backend/tests/test_upload_export.py` (14)
+  - `/app/backend/tests/test_ai_editorial.py` (8)
+  - `/app/backend/tests/test_copyedit.py` (11)
+  - `/app/backend/tests/test_audio_studio.py` (11)
+  - `/app/backend/tests/test_elevenlabs_upload.py` (22)
+  - `/app/backend/tests/test_pipeline_cover.py` (17)
+  - `/app/backend/tests/test_dictation_and_cover_pdf.py` (17)
+  - `/app/backend/tests/test_voice_memos.py` (13)
   - `/app/backend/tests/test_upload_export.py` (14)
   - `/app/backend/tests/test_ai_editorial.py` (8)
   - `/app/backend/tests/test_copyedit.py` (11)
