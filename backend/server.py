@@ -20,6 +20,13 @@ from exporters import (
     generate_epub,
     KDP_TRIM_SIZES,
 )
+from ai_editor import (
+    tighten_prose,
+    improve_clarity,
+    generate_blurb,
+    suggest_chapter_titles,
+    generate_synopsis,
+)
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -524,6 +531,78 @@ async def get_comments(document_id: str, current_user: User = Depends(get_curren
         result.append(Comment(**c))
     
     return result
+
+# --- AI EDITORIAL ROUTES ---
+
+AI_TOOLS = {
+    "tighten": "Tightened prose",
+    "clarity": "Improved clarity",
+    "blurb": "Back-cover blurb",
+    "chapter_titles": "Chapter titles",
+    "synopsis": "Synopsis",
+}
+
+
+class AIEditRequest(BaseModel):
+    tool: str
+    content: Optional[str] = None  # If omitted, uses the saved document content
+
+
+@api_router.get("/ai/tools")
+async def list_ai_tools():
+    return {"tools": [{"key": k, "label": v} for k, v in AI_TOOLS.items()]}
+
+
+@api_router.post("/documents/{document_id}/ai")
+async def run_ai_edit(
+    document_id: str,
+    payload: AIEditRequest,
+    current_user: User = Depends(get_current_user),
+):
+    doc = await db.documents.find_one(
+        {"id": document_id, "user_id": current_user.id}, {"_id": 0}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if payload.tool not in AI_TOOLS:
+        raise HTTPException(status_code=400, detail=f"Unknown AI tool: {payload.tool}")
+
+    html_content = payload.content if payload.content is not None else (doc.get("content") or "")
+    if not html_content.strip():
+        raise HTTPException(status_code=400, detail="Document is empty — add content before running AI tools.")
+
+    metadata = doc.get("metadata") or {}
+    title = doc.get("title")
+    author = metadata.get("author") or current_user.name
+
+    try:
+        if payload.tool == "tighten":
+            result = await tighten_prose(html_content)
+            result_type = "prose"
+        elif payload.tool == "clarity":
+            result = await improve_clarity(html_content)
+            result_type = "prose"
+        elif payload.tool == "blurb":
+            result = await generate_blurb(html_content, title, author)
+            result_type = "blurb"
+        elif payload.tool == "chapter_titles":
+            result = await suggest_chapter_titles(html_content)
+            result_type = "list"
+        else:  # synopsis
+            result = await generate_synopsis(html_content, title, author)
+            result_type = "synopsis"
+    except Exception as exc:
+        logger.exception("AI editorial call failed")
+        raise HTTPException(status_code=502, detail=f"AI service error: {exc}")
+
+    return {
+        "tool": payload.tool,
+        "label": AI_TOOLS[payload.tool],
+        "result": result,
+        "result_type": result_type,
+    }
+
 
 # --- EXPORT ROUTES ---
 

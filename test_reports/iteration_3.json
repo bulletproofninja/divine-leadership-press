@@ -1,0 +1,45 @@
+{
+  "summary": "Comprehensive backend + frontend testing of Divine Leadership Press AI Editorial Polish (iteration 3). 8/8 backend pytest cases passed: GET /api/ai/tools (public, returns exactly {tighten,clarity,blurb,chapter_titles,synopsis}), POST /api/documents/{id}/ai for tighten (prose, ~437 chars), blurb (within 100-1000 chars), chapter_titles (numbered list), plus all 4 error paths (unknown tool 400, empty document 400, unauthenticated 401, cross-user 404). Frontend Playwright flow: registered fresh user, created doc, typed ~366-char passage into ReactQuill editor, ran Tighten Prose -> ai-result-preview rendered with non-empty content -> ai-apply-btn replaced editor content; Copy button produced 'Copied to clipboard' toast (after granting clipboard permissions); ai-discard-btn hid preview without altering content; chapter_titles preview applied and APPENDED with 'Chapter titles' H2 heading + numbered list (editor grew from 325 to 534 chars) with success toast 'Chapter titles appended to manuscript'. All 5 ai-tool-*-btn data-testids render. Real Claude Sonnet 4.5 calls completed in ~5-10s each.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/documents/{id}/ai", "issue": "AI tool failures are caught with bare 'except Exception' and re-raised as HTTP 502 with f-string detail leaking raw exception text (e.g. provider error messages, key fragments could surface). Consider sanitising / logging only and returning generic 502 message."},
+      {"endpoint": "POST /api/documents/{id}/ai", "issue": "Endpoint accepts arbitrary user-supplied content (payload.content) without size/length limit; an adversarial 200KB payload would still be truncated to 12k chars by ai_editor but the request itself is unbounded. Consider Pydantic max_length on AIEditRequest.content."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "AI Copy result", "issue": "navigator.clipboard.writeText silently fails in browsers/iframes without clipboard-write permission — surfaces as 'Copy failed' toast. In production preview environment this worked once permission was explicitly granted; consider a document.execCommand('copy') fallback so users in restricted iframes still get a working Copy button.", "affected_selectors": ["[data-testid=\"ai-copy-btn\"]"]}
+    ],
+    "design_issues": [
+      {"screen": "EditorPage AI Editorial Polish card", "issues": ["Result preview content area is whitespace-pre-wrap which renders raw HTML tags as text for prose results (the API returns plain prose, so currently OK, but if Claude ever returns HTML the preview will show angle-brackets)."]},
+      {"screen": "EditorPage", "issues": ["React a11y warning persists: 'Missing Description or aria-describedby for DialogContent' on new-document-dialog and auth-modal (carried over from iter 2)."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_ai_editorial.py",
+    "/app/test_reports/pytest/pytest_ai_results.xml"
+  ],
+  "action_items": [
+    "Optional: sanitise the 502 detail in run_ai_edit so raw provider exceptions are not echoed to clients.",
+    "Optional: cap AIEditRequest.content length (e.g. max_length=200_000) at the Pydantic layer.",
+    "Optional: add a clipboard fallback (document.execCommand('copy') on a hidden textarea) so ai-copy-btn works in iframe/preview contexts that block navigator.clipboard."
+  ],
+  "critical_code_review_comments": [
+    "ai_editor.py: all five tools call _ask_claude with no timeout; if EMERGENT_LLM_KEY is rate-limited or the provider hangs, the FastAPI worker will block. Wrap with asyncio.wait_for(..., timeout=60) to fail-fast.",
+    "ai_editor._strip_html() removes <li> tags but does not insert separators — bullet lists collapse into one run-on line in the prompt. For chapter_titles this is mitigated by H1 regex, but tighten/clarity will see degraded structure.",
+    "server.py run_ai_edit: 'logger.exception' is called before 'logger' is defined (logger is set up at bottom of file after include_router). The except branch will raise NameError instead of returning 502 if an AI call actually fails. Move logging.basicConfig + logger assignment to top of file.",
+    "server.py: ai_editor functions are awaited inside an `if/elif` chain — extracting to a dict dispatch ({tool: callable}) would be cleaner and easier to extend.",
+    "EditorPage.runAiTool sends current editor `content` (HTML) — good. But applyAiResult uses textToHtml(aiResult.result) which wraps text in <p>; for chapter_titles where result is '1. Foo\\n2. Bar', each line becomes one <p> rather than an <ol>/<li>. Acceptable, but worth noting."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_ai_editorial.py (new pytest module, 8 tests)"
+  ],
+  "success_rate": {"backend": "100% (8/8)", "frontend": "100% (5/5 flows: panel renders, tighten preview, apply replace, discard hide, chapter_titles append + copy toast w/ permission)"},
+  "test_credentials": "None pre-seeded. Tests register fresh TEST_ai_*_<ts>@example.com / Passw0rd! users on the fly. /app/memory/test_credentials.md still missing.",
+  "seed_data_creation": "Per-run TEST_ prefixed users + one document each; not cleaned up but isolated by timestamp.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Run with: REACT_APP_BACKEND_URL=$(grep REACT_APP_BACKEND_URL /app/frontend/.env | cut -d= -f2) pytest /app/backend/tests/test_ai_editorial.py -v. Each happy-path test makes ONE real Claude call (~5-10s); full suite ~14s. For frontend, remember to context.grant_permissions(['clipboard-read','clipboard-write']) before testing ai-copy-btn — without it the Copy button raises and shows 'Copy failed' toast. ReactQuill editor selector is '.ql-editor' (NOT '.ProseMirror'). All previous upload/export tests from iteration 2 still pass."
+}

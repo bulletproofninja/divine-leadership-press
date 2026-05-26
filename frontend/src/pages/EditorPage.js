@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { ArrowLeft, Save, Download, History, MessageSquare, Settings, Eye, Globe, Loader2, FileType, BookOpen } from 'lucide-react';
+import { ArrowLeft, Save, Download, History, MessageSquare, Settings, Eye, Globe, Loader2, FileType, BookOpen, Sparkles, Check, X } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -41,6 +41,8 @@ export default function EditorPage({ user }) {
   const [styleTemplate, setStyleTemplate] = useState('default');
   const [pdfTrim, setPdfTrim] = useState('6x9');
   const [trimSizes, setTrimSizes] = useState([]);
+  const [aiRunning, setAiRunning] = useState(null);
+  const [aiResult, setAiResult] = useState(null); // { tool, label, result, result_type }
 
   useEffect(() => {
     fetchDocument();
@@ -159,6 +161,59 @@ export default function EditorPage({ user }) {
       toast.success(`Exported ${format.toUpperCase()}${format === 'pdf' ? ` (${trim || pdfTrim})` : ''}`);
     } catch (error) {
       toast.error('Export failed');
+    }
+  };
+
+  const runAiTool = async (toolKey) => {
+    setAiRunning(toolKey);
+    setAiResult(null);
+    try {
+      const response = await axios.post(
+        `${API}/documents/${documentId}/ai`,
+        { tool: toolKey, content },
+        getAuthHeaders()
+      );
+      setAiResult(response.data);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'AI tool failed', { duration: 7000 });
+    } finally {
+      setAiRunning(null);
+    }
+  };
+
+  const textToHtml = (text) => {
+    if (!text) return '';
+    return text
+      .split(/\n{2,}/)
+      .map((para) => `<p>${para.replace(/\n/g, '<br>')}</p>`)
+      .join('');
+  };
+
+  const applyAiResult = () => {
+    if (!aiResult) return;
+    if (aiResult.result_type === 'prose') {
+      setContent(textToHtml(aiResult.result));
+      toast.success(`${aiResult.label} applied to manuscript`);
+    } else {
+      // Append blurb / synopsis / chapter titles at the end
+      const heading = `<h2>${aiResult.label}</h2>`;
+      setContent((prev) => `${prev || ''}${heading}${textToHtml(aiResult.result)}`);
+      toast.success(`${aiResult.label} appended to manuscript`);
+    }
+    setAiResult(null);
+  };
+
+  const discardAiResult = () => {
+    setAiResult(null);
+  };
+
+  const copyAiResult = async () => {
+    if (!aiResult) return;
+    try {
+      await navigator.clipboard.writeText(aiResult.result);
+      toast.success('Copied to clipboard');
+    } catch (_) {
+      toast.error('Copy failed');
     }
   };
 
@@ -486,6 +541,94 @@ export default function EditorPage({ user }) {
                   </div>
                 </TabsContent>
               </Tabs>
+            </Card>
+
+            {/* AI Editorial Panel */}
+            <Card data-testid="ai-editor-panel" className="p-4 bg-card/50 backdrop-blur-sm">
+              <h3 className="text-sm font-heading font-semibold mb-3 flex items-center gap-2">
+                <Sparkles className="h-4 w-4 text-primary" />
+                AI Editorial Polish
+              </h3>
+              <p className="text-xs text-muted-foreground mb-3 font-body">
+                Claude Sonnet 4.5 — your silent associate editor.
+              </p>
+              <div className="grid grid-cols-1 gap-2">
+                {[
+                  { key: 'tighten', label: 'Tighten Prose' },
+                  { key: 'clarity', label: 'Improve Clarity' },
+                  { key: 'blurb', label: 'Back-Cover Blurb' },
+                  { key: 'chapter_titles', label: 'Suggest Chapter Titles' },
+                  { key: 'synopsis', label: 'Generate Synopsis' },
+                ].map((t) => (
+                  <Button
+                    key={t.key}
+                    data-testid={`ai-tool-${t.key}-btn`}
+                    variant="outline"
+                    size="sm"
+                    className="w-full justify-start rounded-sm text-xs"
+                    disabled={aiRunning !== null}
+                    onClick={() => runAiTool(t.key)}
+                  >
+                    {aiRunning === t.key ? (
+                      <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" />
+                    ) : (
+                      <Sparkles className="h-3.5 w-3.5 mr-2" />
+                    )}
+                    {t.label}
+                  </Button>
+                ))}
+              </div>
+
+              {aiResult && (
+                <motion.div
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="mt-4 border rounded-sm bg-accent/20"
+                  data-testid="ai-result-preview"
+                >
+                  <div className="flex items-center justify-between px-3 py-2 border-b bg-accent/40">
+                    <span className="text-xs font-semibold">{aiResult.label}</span>
+                    <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                      Preview
+                    </span>
+                  </div>
+                  <div
+                    data-testid="ai-result-content"
+                    className="p-3 text-sm font-body whitespace-pre-wrap max-h-64 overflow-y-auto leading-relaxed"
+                  >
+                    {aiResult.result}
+                  </div>
+                  <div className="flex items-center gap-2 px-3 py-2 border-t bg-card">
+                    <Button
+                      data-testid="ai-apply-btn"
+                      size="sm"
+                      className="flex-1 rounded-sm h-8 text-xs"
+                      onClick={applyAiResult}
+                    >
+                      <Check className="h-3.5 w-3.5 mr-1" />
+                      {aiResult.result_type === 'prose' ? 'Replace Manuscript' : 'Append to Manuscript'}
+                    </Button>
+                    <Button
+                      data-testid="ai-copy-btn"
+                      variant="outline"
+                      size="sm"
+                      className="rounded-sm h-8 text-xs"
+                      onClick={copyAiResult}
+                    >
+                      Copy
+                    </Button>
+                    <Button
+                      data-testid="ai-discard-btn"
+                      variant="ghost"
+                      size="sm"
+                      className="rounded-sm h-8 text-xs"
+                      onClick={discardAiResult}
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </motion.div>
+              )}
             </Card>
 
             {/* Format Preview */}
