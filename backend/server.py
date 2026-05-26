@@ -28,6 +28,12 @@ from ai_editor import (
     generate_synopsis,
 )
 from ai_copyeditor import run_copyedit_pass, STYLE_GUIDES
+from audio_narrator import (
+    list_voices as audio_list_voices,
+    narrate_text,
+    narrate_preview,
+    narrate_audiobook,
+)
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -650,6 +656,94 @@ async def run_copyedit(
         raise HTTPException(status_code=502, detail=f"Copy editor service error: {exc}")
 
     return result
+
+
+# --- AUDIO STUDIO (TTS / AUDIOBOOK) ---
+
+class NarrateRequest(BaseModel):
+    text: Optional[str] = None
+    content: Optional[str] = None  # HTML; used when text is omitted
+    voice: Optional[str] = "onyx"
+    speed: Optional[float] = 1.0
+
+
+@api_router.get("/tts/voices")
+async def tts_voices():
+    return {"voices": audio_list_voices()}
+
+
+@api_router.post("/tts/preview")
+async def tts_preview(payload: NarrateRequest, current_user: User = Depends(get_current_user)):
+    """Short narration preview — used by 'Read Aloud' in the editor."""
+    try:
+        if payload.text:
+            mp3 = await narrate_text(
+                text=payload.text,
+                voice=payload.voice or "onyx",
+                speed=payload.speed or 1.0,
+            )
+        elif payload.content:
+            mp3 = await narrate_preview(
+                html_content=payload.content,
+                voice=payload.voice or "onyx",
+                speed=payload.speed or 1.0,
+            )
+        else:
+            raise HTTPException(status_code=400, detail="Provide either 'text' or 'content'.")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("TTS preview failed")
+        raise HTTPException(status_code=502, detail=f"TTS service error: {exc}")
+
+    return Response(
+        content=mp3,
+        media_type="audio/mpeg",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@api_router.post("/documents/{document_id}/audiobook")
+async def generate_audiobook(
+    document_id: str,
+    voice: str = "onyx",
+    speed: float = 1.0,
+    current_user: User = Depends(get_current_user),
+):
+    """Generate a full MP3 audiobook of the manuscript and return as a download."""
+    doc = await db.documents.find_one(
+        {"id": document_id, "user_id": current_user.id}, {"_id": 0}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    html_content = doc.get("content") or ""
+    title = doc.get("title") or "Untitled"
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", title).strip("_") or "audiobook"
+
+    try:
+        mp3 = await narrate_audiobook(
+            html_content=html_content,
+            voice=voice,
+            speed=speed,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=413, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Audiobook generation failed")
+        raise HTTPException(status_code=502, detail=f"Audiobook service error: {exc}")
+
+    return Response(
+        content=mp3,
+        media_type="audio/mpeg",
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_name}_audiobook.mp3"',
+            "X-Audiobook-Voice": voice,
+            "X-Audiobook-Speed": str(speed),
+        },
+    )
 
 
 # --- EXPORT ROUTES ---

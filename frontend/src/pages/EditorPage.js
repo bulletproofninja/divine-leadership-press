@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { ArrowLeft, Save, Download, History, MessageSquare, Settings, Eye, Globe, Loader2, FileType, BookOpen, Sparkles, Check, X, ScanSearch, AlertCircle, Lightbulb, FileSearch } from 'lucide-react';
+import { ArrowLeft, Save, Download, History, MessageSquare, Settings, Eye, Globe, Loader2, FileType, BookOpen, Sparkles, Check, X, ScanSearch, AlertCircle, Lightbulb, FileSearch, Headphones, Play, Pause } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -126,6 +126,12 @@ export default function EditorPage({ user }) {
   const [styleGuide, setStyleGuide] = useState('chicago');
   const [styleGuides, setStyleGuides] = useState([]);
   const [issueFilter, setIssueFilter] = useState('all');
+  const [ttsVoices, setTtsVoices] = useState([]);
+  const [ttsVoice, setTtsVoice] = useState('onyx');
+  const [ttsSpeed, setTtsSpeed] = useState(1.0);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewAudioUrl, setPreviewAudioUrl] = useState(null);
+  const [audiobookLoading, setAudiobookLoading] = useState(false);
 
   useEffect(() => {
     fetchDocument();
@@ -146,6 +152,9 @@ export default function EditorPage({ user }) {
   useEffect(() => {
     axios.get(`${API}/copyedit/style-guides`).then((r) => {
       setStyleGuides(r.data.style_guides || []);
+    }).catch(() => {});
+    axios.get(`${API}/tts/voices`).then((r) => {
+      setTtsVoices(r.data.voices || []);
     }).catch(() => {});
   }, []);
 
@@ -421,6 +430,57 @@ export default function EditorPage({ user }) {
 
   const handleRejectAll = () => {
     setCopyEditData((prev) => prev ? { ...prev, issues: [] } : prev);
+  };
+
+  const playTtsPreview = async () => {
+    setPreviewLoading(true);
+    if (previewAudioUrl) {
+      window.URL.revokeObjectURL(previewAudioUrl);
+      setPreviewAudioUrl(null);
+    }
+    try {
+      const response = await axios.post(
+        `${API}/tts/preview`,
+        { content, voice: ttsVoice, speed: ttsSpeed },
+        { ...getAuthHeaders(), responseType: 'blob' }
+      );
+      const blob = new Blob([response.data], { type: 'audio/mpeg' });
+      const url = window.URL.createObjectURL(blob);
+      setPreviewAudioUrl(url);
+      toast.success(`Preview ready — ${ttsVoice}`);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Read Aloud failed', { duration: 7000 });
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const downloadAudiobook = async () => {
+    setAudiobookLoading(true);
+    try {
+      const response = await axios.post(
+        `${API}/documents/${documentId}/audiobook?voice=${encodeURIComponent(ttsVoice)}&speed=${ttsSpeed}`,
+        {},
+        { ...getAuthHeaders(), responseType: 'blob', timeout: 600000 }
+      );
+      const blob = new Blob([response.data], { type: 'audio/mpeg' });
+      const url = window.URL.createObjectURL(blob);
+      const a = window.document.createElement('a');
+      a.href = url;
+      const safe = (title || 'audiobook').replace(/[^A-Za-z0-9._-]+/g, '_');
+      a.download = `${safe}_audiobook.mp3`;
+      window.document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      toast.success(`Audiobook generated — ${ttsVoice} @ ${ttsSpeed}×`);
+    } catch (error) {
+      const detail = error.response?.data?.detail
+        || (error.response?.status === 413 ? 'Manuscript is too long for a single audiobook' : 'Audiobook generation failed');
+      toast.error(detail, { duration: 8000 });
+    } finally {
+      setAudiobookLoading(false);
+    }
   };
 
   const handlePublish = async (platform) => {
@@ -1000,6 +1060,102 @@ export default function EditorPage({ user }) {
                 <div className="text-muted-foreground">
                   Approx. pages: <strong className="text-foreground">{Math.ceil(wordCount / 250)}</strong>
                 </div>
+              </div>
+            </Card>
+
+            {/* Audio Studio — TTS + Audiobook */}
+            <Card data-testid="audio-studio-panel" className="p-4 bg-card/50 backdrop-blur-sm">
+              <h3 className="text-sm font-heading font-semibold mb-3 flex items-center gap-2">
+                <Headphones className="h-4 w-4 text-primary" />
+                Audio Studio
+              </h3>
+              <p className="text-xs text-muted-foreground mb-3 font-body">
+                Read aloud or render a full audiobook MP3. Powered by OpenAI TTS HD.
+              </p>
+
+              <div className="space-y-3">
+                <div>
+                  <Label className="text-xs">Narrator Voice</Label>
+                  <Select value={ttsVoice} onValueChange={setTtsVoice}>
+                    <SelectTrigger data-testid="tts-voice-select" className="rounded-sm h-9 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(ttsVoices.length > 0 ? ttsVoices : [
+                        { key: 'onyx', label: 'Onyx — Deep, authoritative' },
+                        { key: 'nova', label: 'Nova — Energetic, upbeat' },
+                        { key: 'fable', label: 'Fable — British, literary' },
+                      ]).map((v) => (
+                        <SelectItem key={v.key} value={v.key} className="text-xs">
+                          {v.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <Label className="text-xs">Speech Speed</Label>
+                    <span data-testid="tts-speed-value" className="text-xs font-mono">{ttsSpeed.toFixed(2)}×</span>
+                  </div>
+                  <input
+                    data-testid="tts-speed-slider"
+                    type="range"
+                    min="0.5"
+                    max="2.0"
+                    step="0.05"
+                    value={ttsSpeed}
+                    onChange={(e) => setTtsSpeed(parseFloat(e.target.value))}
+                    className="w-full accent-primary"
+                  />
+                </div>
+
+                <Button
+                  data-testid="tts-preview-btn"
+                  variant="outline"
+                  size="sm"
+                  className="w-full rounded-sm"
+                  disabled={previewLoading || audiobookLoading}
+                  onClick={playTtsPreview}
+                >
+                  {previewLoading ? (
+                    <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Synthesising…</>
+                  ) : (
+                    <><Play className="h-4 w-4 mr-2" /> Read Aloud (Preview)</>
+                  )}
+                </Button>
+
+                {previewAudioUrl && (
+                  <audio
+                    data-testid="tts-preview-player"
+                    controls
+                    autoPlay
+                    src={previewAudioUrl}
+                    className="w-full mt-2 rounded-sm"
+                  >
+                    <track kind="captions" />
+                  </audio>
+                )}
+
+                <Separator className="my-2" />
+
+                <Button
+                  data-testid="audiobook-download-btn"
+                  size="sm"
+                  className="w-full rounded-sm"
+                  disabled={audiobookLoading || previewLoading}
+                  onClick={downloadAudiobook}
+                >
+                  {audiobookLoading ? (
+                    <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Rendering audiobook…</>
+                  ) : (
+                    <><Download className="h-4 w-4 mr-2" /> Generate Audiobook (MP3)</>
+                  )}
+                </Button>
+                <p className="text-[10px] text-muted-foreground text-center">
+                  Full manuscripts up to ~17,000 words. Larger books — generate per chapter.
+                </p>
               </div>
             </Card>
 
