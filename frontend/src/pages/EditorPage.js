@@ -132,12 +132,29 @@ export default function EditorPage({ user }) {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewAudioUrl, setPreviewAudioUrl] = useState(null);
   const [audiobookLoading, setAudiobookLoading] = useState(false);
+  // ElevenLabs state
+  const [hasElevenKey, setHasElevenKey] = useState(false);
+  const [elevenKeyInput, setElevenKeyInput] = useState('');
+  const [savingElevenKey, setSavingElevenKey] = useState(false);
+  const [elevenVoices, setElevenVoices] = useState([]);
+  const [elevenVoiceId, setElevenVoiceId] = useState('');
+  const [elevenLoadingVoices, setElevenLoadingVoices] = useState(false);
+  const [elevenCustomVoiceId, setElevenCustomVoiceId] = useState('');
+  const [elevenPreviewLoading, setElevenPreviewLoading] = useState(false);
+  const [elevenAudiobookLoading, setElevenAudiobookLoading] = useState(false);
+  const [elevenPreviewUrl, setElevenPreviewUrl] = useState(null);
+  // Uploaded audiobook state
+  const [uploadedAudiobookInfo, setUploadedAudiobookInfo] = useState(null);
+  const [uploadingAudiobook, setUploadingAudiobook] = useState(false);
+  const [uploadedPlayerUrl, setUploadedPlayerUrl] = useState(null);
 
   useEffect(() => {
     fetchDocument();
     fetchVersions();
     fetchComments();
     fetchTrimSizes();
+    loadElevenLabsStatus();
+    fetchUploadedInfo();
   }, [documentId]);
 
   const fetchTrimSizes = async () => {
@@ -430,6 +447,184 @@ export default function EditorPage({ user }) {
 
   const handleRejectAll = () => {
     setCopyEditData((prev) => prev ? { ...prev, issues: [] } : prev);
+  };
+
+  // --- ElevenLabs handlers ---
+  const loadElevenLabsStatus = async () => {
+    try {
+      const r = await axios.get(`${API}/auth/me`, getAuthHeaders());
+      setHasElevenKey(!!r.data.has_elevenlabs_key);
+      if (r.data.has_elevenlabs_key && elevenVoices.length === 0) {
+        fetchElevenVoices();
+      }
+    } catch (_) {}
+  };
+
+  const saveElevenKey = async () => {
+    if (!elevenKeyInput.trim()) {
+      toast.error('Paste your ElevenLabs API key first');
+      return;
+    }
+    setSavingElevenKey(true);
+    try {
+      await axios.put(
+        `${API}/auth/me/elevenlabs-key`,
+        { api_key: elevenKeyInput.trim() },
+        getAuthHeaders()
+      );
+      setHasElevenKey(true);
+      setElevenKeyInput('');
+      toast.success('ElevenLabs key saved');
+      fetchElevenVoices();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Could not save key');
+    } finally {
+      setSavingElevenKey(false);
+    }
+  };
+
+  const clearElevenKey = async () => {
+    try {
+      await axios.delete(`${API}/auth/me/elevenlabs-key`, getAuthHeaders());
+      setHasElevenKey(false);
+      setElevenVoices([]);
+      setElevenVoiceId('');
+      toast.success('ElevenLabs key removed');
+    } catch (_) {
+      toast.error('Could not remove key');
+    }
+  };
+
+  const fetchElevenVoices = async () => {
+    setElevenLoadingVoices(true);
+    try {
+      const r = await axios.get(`${API}/elevenlabs/voices`, getAuthHeaders());
+      const list = r.data.voices || [];
+      setElevenVoices(list);
+      if (list.length > 0 && !elevenVoiceId) setElevenVoiceId(list[0].voice_id);
+    } catch (error) {
+      const status = error.response?.status;
+      if (status === 401) {
+        toast.error('ElevenLabs rejected your key — replace it below', { duration: 7000 });
+      } else if (status !== 400) {
+        toast.error(error.response?.data?.detail || 'Could not load voices');
+      }
+    } finally {
+      setElevenLoadingVoices(false);
+    }
+  };
+
+  const playElevenPreview = async () => {
+    const voiceId = elevenCustomVoiceId.trim() || elevenVoiceId;
+    if (!voiceId) {
+      toast.error('Pick a voice or paste a custom Voice ID');
+      return;
+    }
+    setElevenPreviewLoading(true);
+    if (elevenPreviewUrl) {
+      window.URL.revokeObjectURL(elevenPreviewUrl);
+      setElevenPreviewUrl(null);
+    }
+    try {
+      const r = await axios.post(
+        `${API}/elevenlabs/preview`,
+        { content, voice_id: voiceId },
+        { ...getAuthHeaders(), responseType: 'blob' }
+      );
+      const url = window.URL.createObjectURL(new Blob([r.data], { type: 'audio/mpeg' }));
+      setElevenPreviewUrl(url);
+      toast.success('Preview ready');
+    } catch (error) {
+      const detail = error.response?.data?.detail || 'ElevenLabs preview failed';
+      toast.error(detail, { duration: 7000 });
+    } finally {
+      setElevenPreviewLoading(false);
+    }
+  };
+
+  const downloadElevenAudiobook = async () => {
+    const voiceId = elevenCustomVoiceId.trim() || elevenVoiceId;
+    if (!voiceId) {
+      toast.error('Pick a voice or paste a custom Voice ID');
+      return;
+    }
+    setElevenAudiobookLoading(true);
+    try {
+      const r = await axios.post(
+        `${API}/documents/${documentId}/elevenlabs-audiobook?voice_id=${encodeURIComponent(voiceId)}`,
+        {},
+        { ...getAuthHeaders(), responseType: 'blob', timeout: 900000 }
+      );
+      const url = window.URL.createObjectURL(new Blob([r.data], { type: 'audio/mpeg' }));
+      const a = window.document.createElement('a');
+      a.href = url;
+      const safe = (title || 'audiobook').replace(/[^A-Za-z0-9._-]+/g, '_');
+      a.download = `${safe}_elevenlabs.mp3`;
+      window.document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      toast.success('ElevenLabs audiobook downloaded');
+    } catch (error) {
+      const detail = error.response?.data?.detail || 'ElevenLabs audiobook failed';
+      toast.error(detail, { duration: 8000 });
+    } finally {
+      setElevenAudiobookLoading(false);
+    }
+  };
+
+  // --- Audiobook upload handlers ---
+  const fetchUploadedInfo = async () => {
+    try {
+      const r = await axios.get(`${API}/documents/${documentId}/audiobook/info`, getAuthHeaders());
+      setUploadedAudiobookInfo(r.data);
+      if (r.data.uploaded) {
+        // Build playable URL via authenticated fetch → blob
+        try {
+          const audioR = await axios.get(`${API}/documents/${documentId}/audiobook`,
+            { ...getAuthHeaders(), responseType: 'blob' });
+          const url = window.URL.createObjectURL(audioR.data);
+          setUploadedPlayerUrl(url);
+        } catch (_) {}
+      } else {
+        setUploadedPlayerUrl(null);
+      }
+    } catch (_) {
+      setUploadedAudiobookInfo({ uploaded: false });
+    }
+  };
+
+  const uploadAudiobookFile = async (file) => {
+    if (!file) return;
+    setUploadingAudiobook(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      await axios.post(`${API}/documents/${documentId}/audiobook/upload`, fd, {
+        ...getAuthHeaders(),
+        headers: { ...getAuthHeaders().headers, 'Content-Type': 'multipart/form-data' },
+      });
+      toast.success('Audiobook uploaded');
+      fetchUploadedInfo();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Upload failed', { duration: 7000 });
+    } finally {
+      setUploadingAudiobook(false);
+    }
+  };
+
+  const deleteUploadedAudiobook = async () => {
+    try {
+      await axios.delete(`${API}/documents/${documentId}/audiobook`, getAuthHeaders());
+      toast.success('Uploaded audiobook removed');
+      setUploadedAudiobookInfo({ uploaded: false });
+      if (uploadedPlayerUrl) {
+        window.URL.revokeObjectURL(uploadedPlayerUrl);
+        setUploadedPlayerUrl(null);
+      }
+    } catch (_) {
+      toast.error('Could not remove audiobook');
+    }
   };
 
   const playTtsPreview = async () => {
@@ -1063,100 +1258,230 @@ export default function EditorPage({ user }) {
               </div>
             </Card>
 
-            {/* Audio Studio — TTS + Audiobook */}
+            {/* Audio Studio — TTS + Audiobook (3 providers) */}
             <Card data-testid="audio-studio-panel" className="p-4 bg-card/50 backdrop-blur-sm">
               <h3 className="text-sm font-heading font-semibold mb-3 flex items-center gap-2">
                 <Headphones className="h-4 w-4 text-primary" />
                 Audio Studio
               </h3>
               <p className="text-xs text-muted-foreground mb-3 font-body">
-                Read aloud or render a full audiobook MP3. Powered by OpenAI TTS HD.
+                Pick a voice provider, preview, or render a downloadable audiobook.
               </p>
 
-              <div className="space-y-3">
-                <div>
-                  <Label className="text-xs">Narrator Voice</Label>
-                  <Select value={ttsVoice} onValueChange={setTtsVoice}>
-                    <SelectTrigger data-testid="tts-voice-select" className="rounded-sm h-9 text-xs">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {(ttsVoices.length > 0 ? ttsVoices : [
-                        { key: 'onyx', label: 'Onyx — Deep, authoritative' },
-                        { key: 'nova', label: 'Nova — Energetic, upbeat' },
-                        { key: 'fable', label: 'Fable — British, literary' },
-                      ]).map((v) => (
-                        <SelectItem key={v.key} value={v.key} className="text-xs">
-                          {v.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+              <Tabs defaultValue="openai" className="w-full">
+                <TabsList className="w-full grid grid-cols-3 h-8">
+                  <TabsTrigger data-testid="audio-tab-openai" value="openai" className="text-[11px]">OpenAI</TabsTrigger>
+                  <TabsTrigger data-testid="audio-tab-elevenlabs" value="elevenlabs" className="text-[11px]">ElevenLabs</TabsTrigger>
+                  <TabsTrigger data-testid="audio-tab-upload" value="upload" className="text-[11px]">Uploaded</TabsTrigger>
+                </TabsList>
 
-                <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <Label className="text-xs">Speech Speed</Label>
-                    <span data-testid="tts-speed-value" className="text-xs font-mono">{ttsSpeed.toFixed(2)}×</span>
+                {/* --- OpenAI tab --- */}
+                <TabsContent value="openai" className="space-y-3 mt-3">
+                  <div>
+                    <Label className="text-xs">Narrator Voice</Label>
+                    <Select value={ttsVoice} onValueChange={setTtsVoice}>
+                      <SelectTrigger data-testid="tts-voice-select" className="rounded-sm h-9 text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {(ttsVoices.length > 0 ? ttsVoices : [
+                          { key: 'onyx', label: 'Onyx — Deep, authoritative' },
+                          { key: 'nova', label: 'Nova — Energetic, upbeat' },
+                          { key: 'fable', label: 'Fable — British, literary' },
+                        ]).map((v) => (
+                          <SelectItem key={v.key} value={v.key} className="text-xs">{v.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
-                  <input
-                    data-testid="tts-speed-slider"
-                    type="range"
-                    min="0.5"
-                    max="2.0"
-                    step="0.05"
-                    value={ttsSpeed}
-                    onChange={(e) => setTtsSpeed(parseFloat(e.target.value))}
-                    className="w-full accent-primary"
-                  />
-                </div>
-
-                <Button
-                  data-testid="tts-preview-btn"
-                  variant="outline"
-                  size="sm"
-                  className="w-full rounded-sm"
-                  disabled={previewLoading || audiobookLoading}
-                  onClick={playTtsPreview}
-                >
-                  {previewLoading ? (
-                    <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Synthesising…</>
-                  ) : (
-                    <><Play className="h-4 w-4 mr-2" /> Read Aloud (Preview)</>
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <Label className="text-xs">Speech Speed</Label>
+                      <span data-testid="tts-speed-value" className="text-xs font-mono">{ttsSpeed.toFixed(2)}×</span>
+                    </div>
+                    <input
+                      data-testid="tts-speed-slider"
+                      type="range" min="0.5" max="2.0" step="0.05"
+                      value={ttsSpeed}
+                      onChange={(e) => setTtsSpeed(parseFloat(e.target.value))}
+                      className="w-full accent-primary"
+                    />
+                  </div>
+                  <Button data-testid="tts-preview-btn" variant="outline" size="sm" className="w-full rounded-sm"
+                    disabled={previewLoading || audiobookLoading} onClick={playTtsPreview}>
+                    {previewLoading ? (<><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Synthesising…</>) :
+                      (<><Play className="h-4 w-4 mr-2" /> Read Aloud (Preview)</>)}
+                  </Button>
+                  {previewAudioUrl && (
+                    <audio data-testid="tts-preview-player" controls autoPlay src={previewAudioUrl} className="w-full mt-2 rounded-sm">
+                      <track kind="captions" />
+                    </audio>
                   )}
-                </Button>
+                  <Separator className="my-2" />
+                  <Button data-testid="audiobook-download-btn" size="sm" className="w-full rounded-sm"
+                    disabled={audiobookLoading || previewLoading} onClick={downloadAudiobook}>
+                    {audiobookLoading ? (<><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Rendering audiobook…</>) :
+                      (<><Download className="h-4 w-4 mr-2" /> Generate Audiobook (MP3)</>)}
+                  </Button>
+                  <p className="text-[10px] text-muted-foreground text-center">
+                    Full manuscripts up to ~17,000 words. Larger books — generate per chapter.
+                  </p>
+                </TabsContent>
 
-                {previewAudioUrl && (
-                  <audio
-                    data-testid="tts-preview-player"
-                    controls
-                    autoPlay
-                    src={previewAudioUrl}
-                    className="w-full mt-2 rounded-sm"
+                {/* --- ElevenLabs tab --- */}
+                <TabsContent value="elevenlabs" className="space-y-3 mt-3">
+                  {!hasElevenKey ? (
+                    <div data-testid="eleven-key-setup" className="space-y-2">
+                      <div className="flex items-start gap-2 p-2 rounded-sm border border-amber-200 bg-amber-50 text-[11px] text-amber-900">
+                        <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
+                        <div>Paste your ElevenLabs API key to access stock voices, voice cloning, and premium narration. Get one at <span className="font-semibold">elevenlabs.io → Settings → API Keys</span>.</div>
+                      </div>
+                      <Input
+                        data-testid="eleven-key-input"
+                        type="password"
+                        placeholder="sk_..."
+                        value={elevenKeyInput}
+                        onChange={(e) => setElevenKeyInput(e.target.value)}
+                        className="rounded-sm h-9 text-xs font-mono"
+                      />
+                      <Button
+                        data-testid="eleven-save-key-btn"
+                        size="sm"
+                        className="w-full rounded-sm"
+                        disabled={savingElevenKey || !elevenKeyInput.trim()}
+                        onClick={saveElevenKey}
+                      >
+                        {savingElevenKey ? (<><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Saving…</>) : 'Save Key'}
+                      </Button>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span data-testid="eleven-connected-label" className="flex items-center gap-1 text-emerald-700">
+                          <Check className="h-3 w-3" /> Connected to ElevenLabs
+                        </span>
+                        <button
+                          data-testid="eleven-clear-key-btn"
+                          type="button"
+                          className="text-muted-foreground hover:text-destructive underline"
+                          onClick={clearElevenKey}
+                        >
+                          Remove key
+                        </button>
+                      </div>
+                      <div>
+                        <Label className="text-xs">Stock / Cloned Voice</Label>
+                        <Select value={elevenVoiceId} onValueChange={setElevenVoiceId}>
+                          <SelectTrigger data-testid="eleven-voice-select" className="rounded-sm h-9 text-xs">
+                            <SelectValue placeholder={elevenLoadingVoices ? 'Loading…' : 'Select a voice'} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {elevenVoices.map((v) => (
+                              <SelectItem key={v.voice_id} value={v.voice_id} className="text-xs">
+                                {v.name} {v.category && v.category !== 'generated' ? `(${v.category})` : ''}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <button
+                          data-testid="eleven-refresh-voices-btn"
+                          type="button"
+                          className="text-[10px] text-muted-foreground hover:text-primary underline mt-1"
+                          onClick={fetchElevenVoices}
+                        >
+                          Refresh voice list
+                        </button>
+                      </div>
+                      <div>
+                        <Label className="text-xs">Or paste a custom Voice ID (e.g. cloned voice)</Label>
+                        <Input
+                          data-testid="eleven-custom-voice-input"
+                          value={elevenCustomVoiceId}
+                          onChange={(e) => setElevenCustomVoiceId(e.target.value)}
+                          placeholder="21m00Tcm4Tlvxxxxxxxxx"
+                          className="rounded-sm h-9 text-xs font-mono"
+                        />
+                      </div>
+                      <Button
+                        data-testid="eleven-preview-btn"
+                        variant="outline"
+                        size="sm"
+                        className="w-full rounded-sm"
+                        disabled={elevenPreviewLoading || elevenAudiobookLoading}
+                        onClick={playElevenPreview}
+                      >
+                        {elevenPreviewLoading ? (<><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Synthesising…</>) :
+                          (<><Play className="h-4 w-4 mr-2" /> Preview with ElevenLabs</>)}
+                      </Button>
+                      {elevenPreviewUrl && (
+                        <audio data-testid="eleven-preview-player" controls autoPlay src={elevenPreviewUrl} className="w-full mt-2 rounded-sm">
+                          <track kind="captions" />
+                        </audio>
+                      )}
+                      <Separator className="my-2" />
+                      <Button
+                        data-testid="eleven-audiobook-btn"
+                        size="sm"
+                        className="w-full rounded-sm"
+                        disabled={elevenAudiobookLoading || elevenPreviewLoading}
+                        onClick={downloadElevenAudiobook}
+                      >
+                        {elevenAudiobookLoading ? (<><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Rendering audiobook…</>) :
+                          (<><Download className="h-4 w-4 mr-2" /> Generate Audiobook (ElevenLabs)</>)}
+                      </Button>
+                      <p className="text-[10px] text-muted-foreground text-center">
+                        Up to ~17,000 words per run. Uses your ElevenLabs quota.
+                      </p>
+                    </>
+                  )}
+                </TabsContent>
+
+                {/* --- Upload tab --- */}
+                <TabsContent value="upload" className="space-y-3 mt-3">
+                  <p className="text-[11px] text-muted-foreground">
+                    Already have an audiobook? Upload an MP3, WAV, M4A, OGG, or FLAC file (≤200 MB) to attach it to this manuscript.
+                  </p>
+                  <label
+                    data-testid="audiobook-upload-label"
+                    className="block w-full p-4 border-2 border-dashed rounded-sm text-center cursor-pointer hover:bg-accent/30 transition-colors text-xs"
                   >
-                    <track kind="captions" />
-                  </audio>
-                )}
-
-                <Separator className="my-2" />
-
-                <Button
-                  data-testid="audiobook-download-btn"
-                  size="sm"
-                  className="w-full rounded-sm"
-                  disabled={audiobookLoading || previewLoading}
-                  onClick={downloadAudiobook}
-                >
-                  {audiobookLoading ? (
-                    <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Rendering audiobook…</>
-                  ) : (
-                    <><Download className="h-4 w-4 mr-2" /> Generate Audiobook (MP3)</>
+                    <input
+                      data-testid="audiobook-upload-input"
+                      type="file"
+                      accept="audio/mpeg,audio/mp3,audio/wav,audio/m4a,audio/ogg,audio/flac,.mp3,.wav,.m4a,.ogg,.flac"
+                      className="hidden"
+                      onChange={(e) => uploadAudiobookFile(e.target.files?.[0])}
+                    />
+                    {uploadingAudiobook ? (
+                      <span className="flex items-center justify-center gap-2"><Loader2 className="h-4 w-4 animate-spin" /> Uploading…</span>
+                    ) : (
+                      <>Click or drop a file here</>
+                    )}
+                  </label>
+                  {uploadedAudiobookInfo?.uploaded && (
+                    <div data-testid="uploaded-audiobook-status" className="space-y-2">
+                      <div className="flex items-center justify-between text-[11px] text-emerald-700">
+                        <span className="flex items-center gap-1">
+                          <Check className="h-3 w-3" /> {uploadedAudiobookInfo.filename} ({Math.round(uploadedAudiobookInfo.size_bytes / 1024)} KB)
+                        </span>
+                        <button
+                          data-testid="audiobook-remove-btn"
+                          type="button"
+                          className="text-muted-foreground hover:text-destructive underline"
+                          onClick={deleteUploadedAudiobook}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                      {uploadedPlayerUrl && (
+                        <audio data-testid="uploaded-audiobook-player" controls src={uploadedPlayerUrl} className="w-full rounded-sm">
+                          <track kind="captions" />
+                        </audio>
+                      )}
+                    </div>
                   )}
-                </Button>
-                <p className="text-[10px] text-muted-foreground text-center">
-                  Full manuscripts up to ~17,000 words. Larger books — generate per chapter.
-                </p>
-              </div>
+                </TabsContent>
+              </Tabs>
             </Card>
 
             {/* Export & Publish */}

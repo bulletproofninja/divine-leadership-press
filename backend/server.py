@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
+import asyncio
 import logging
 import re
 from pathlib import Path
@@ -33,6 +34,22 @@ from audio_narrator import (
     narrate_text,
     narrate_preview,
     narrate_audiobook,
+)
+from elevenlabs_narrator import (
+    list_voices as eleven_list_voices,
+    narrate_text as eleven_narrate_text,
+    narrate_preview as eleven_narrate_preview,
+    narrate_audiobook as eleven_narrate_audiobook,
+    ElevenLabsAuthError,
+    ElevenLabsServiceError,
+    DEFAULT_MODEL as ELEVEN_DEFAULT_MODEL,
+)
+from audio_uploads import (
+    save_upload as save_audio_upload,
+    find_existing as find_audio_upload,
+    delete_existing as delete_audio_upload,
+    media_type_for as audio_media_type,
+    ALLOWED_EXTENSIONS as AUDIO_ALLOWED_EXTENSIONS,
 )
 
 ROOT_DIR = Path(__file__).parent
@@ -66,6 +83,7 @@ class User(BaseModel):
     email: EmailStr
     name: str
     password_hash: str
+    elevenlabs_api_key: Optional[str] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class UserRegister(BaseModel):
@@ -81,6 +99,7 @@ class UserResponse(BaseModel):
     id: str
     email: str
     name: str
+    has_elevenlabs_key: bool = False
     created_at: datetime
 
 class TokenResponse(BaseModel):
@@ -214,6 +233,7 @@ async def register(user_data: UserRegister):
         id=user.id,
         email=user.email,
         name=user.name,
+        has_elevenlabs_key=bool(user.elevenlabs_api_key),
         created_at=user.created_at
     )
     
@@ -238,6 +258,7 @@ async def login(credentials: UserLogin):
         id=user.id,
         email=user.email,
         name=user.name,
+        has_elevenlabs_key=bool(user.elevenlabs_api_key),
         created_at=user.created_at
     )
     
@@ -249,7 +270,48 @@ async def get_me(current_user: User = Depends(get_current_user)):
         id=current_user.id,
         email=current_user.email,
         name=current_user.name,
+        has_elevenlabs_key=bool(current_user.elevenlabs_api_key),
         created_at=current_user.created_at
+    )
+
+
+class ElevenLabsKeyRequest(BaseModel):
+    api_key: str
+
+
+@api_router.put("/auth/me/elevenlabs-key", response_model=UserResponse)
+async def set_elevenlabs_key(
+    payload: ElevenLabsKeyRequest,
+    current_user: User = Depends(get_current_user),
+):
+    key = (payload.api_key or "").strip()
+    if not key or len(key) < 20:
+        raise HTTPException(status_code=400, detail="ElevenLabs API key looks invalid.")
+    await db.users.update_one(
+        {"id": current_user.id},
+        {"$set": {"elevenlabs_api_key": key}},
+    )
+    return UserResponse(
+        id=current_user.id,
+        email=current_user.email,
+        name=current_user.name,
+        has_elevenlabs_key=True,
+        created_at=current_user.created_at,
+    )
+
+
+@api_router.delete("/auth/me/elevenlabs-key", response_model=UserResponse)
+async def clear_elevenlabs_key(current_user: User = Depends(get_current_user)):
+    await db.users.update_one(
+        {"id": current_user.id},
+        {"$unset": {"elevenlabs_api_key": ""}},
+    )
+    return UserResponse(
+        id=current_user.id,
+        email=current_user.email,
+        name=current_user.name,
+        has_elevenlabs_key=False,
+        created_at=current_user.created_at,
     )
 
 # --- DOCUMENT ROUTES ---
@@ -744,6 +806,221 @@ async def generate_audiobook(
             "X-Audiobook-Speed": str(speed),
         },
     )
+
+
+# --- ELEVENLABS (PREMIUM TTS + VOICE CLONING) ---
+
+def _require_elevenlabs_key(current_user: User) -> str:
+    key = current_user.elevenlabs_api_key
+    if not key:
+        raise HTTPException(
+            status_code=400,
+            detail="No ElevenLabs API key on file. Save your key in Audio Studio first.",
+        )
+    return key
+
+
+class ElevenLabsNarrateRequest(BaseModel):
+    text: Optional[str] = None
+    content: Optional[str] = None
+    voice_id: str
+    model_id: Optional[str] = None
+    stability: Optional[float] = 0.5
+    similarity_boost: Optional[float] = 0.75
+
+
+@api_router.get("/elevenlabs/voices")
+async def elevenlabs_voices(current_user: User = Depends(get_current_user)):
+    key = _require_elevenlabs_key(current_user)
+    try:
+        voices = await asyncio.to_thread(eleven_list_voices, key)
+    except ElevenLabsAuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+    except Exception as exc:
+        logger.exception("ElevenLabs voice list failed")
+        raise HTTPException(status_code=502, detail=f"ElevenLabs error: {exc}")
+    return {"voices": voices}
+
+
+@api_router.post("/elevenlabs/preview")
+async def elevenlabs_preview(
+    payload: ElevenLabsNarrateRequest,
+    current_user: User = Depends(get_current_user),
+):
+    key = _require_elevenlabs_key(current_user)
+    if not payload.voice_id:
+        raise HTTPException(status_code=400, detail="voice_id is required.")
+    model_id = payload.model_id or ELEVEN_DEFAULT_MODEL
+
+    try:
+        if payload.text:
+            mp3 = await asyncio.to_thread(
+                eleven_narrate_text,
+                api_key=key, text=payload.text, voice_id=payload.voice_id,
+                model_id=model_id,
+                stability=payload.stability or 0.5,
+                similarity_boost=payload.similarity_boost or 0.75,
+            )
+        elif payload.content:
+            mp3 = await asyncio.to_thread(
+                eleven_narrate_preview,
+                api_key=key, html_content=payload.content,
+                voice_id=payload.voice_id, model_id=model_id,
+            )
+        else:
+            raise HTTPException(status_code=400, detail="Provide either 'text' or 'content'.")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except ElevenLabsAuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+    except ElevenLabsServiceError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("ElevenLabs preview failed")
+        raise HTTPException(status_code=502, detail=f"ElevenLabs error: {exc}")
+
+    return Response(content=mp3, media_type="audio/mpeg", headers={"Cache-Control": "no-store"})
+
+
+@api_router.post("/documents/{document_id}/elevenlabs-audiobook")
+async def elevenlabs_audiobook(
+    document_id: str,
+    voice_id: str,
+    model_id: Optional[str] = None,
+    stability: float = 0.5,
+    similarity_boost: float = 0.75,
+    current_user: User = Depends(get_current_user),
+):
+    key = _require_elevenlabs_key(current_user)
+    if not voice_id:
+        raise HTTPException(status_code=400, detail="voice_id is required.")
+
+    doc = await db.documents.find_one(
+        {"id": document_id, "user_id": current_user.id}, {"_id": 0}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    html_content = doc.get("content") or ""
+    title = doc.get("title") or "Untitled"
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", title).strip("_") or "audiobook"
+
+    try:
+        mp3 = await asyncio.to_thread(
+            eleven_narrate_audiobook,
+            api_key=key, html_content=html_content, voice_id=voice_id,
+            model_id=model_id or ELEVEN_DEFAULT_MODEL,
+            stability=stability, similarity_boost=similarity_boost,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=413, detail=str(exc))
+    except ElevenLabsAuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+    except ElevenLabsServiceError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except Exception as exc:
+        logger.exception("ElevenLabs audiobook failed")
+        raise HTTPException(status_code=502, detail=f"ElevenLabs error: {exc}")
+
+    return Response(
+        content=mp3,
+        media_type="audio/mpeg",
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_name}_elevenlabs.mp3"',
+            "X-Audiobook-Voice-Id": voice_id,
+            "X-Audiobook-Model": model_id or ELEVEN_DEFAULT_MODEL,
+        },
+    )
+
+
+# --- AUDIOBOOK UPLOADS (author-supplied MP3) ---
+
+@api_router.post("/documents/{document_id}/audiobook/upload")
+async def upload_audiobook(
+    document_id: str,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+):
+    doc = await db.documents.find_one(
+        {"id": document_id, "user_id": current_user.id}, {"_id": 0}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    data = await file.read()
+    try:
+        path = save_audio_upload(current_user.id, document_id, file.filename or "audio.mp3", data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return {
+        "document_id": document_id,
+        "filename": path.name,
+        "size_bytes": path.stat().st_size,
+        "uploaded": True,
+    }
+
+
+@api_router.get("/documents/{document_id}/audiobook")
+async def fetch_audiobook(
+    document_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    doc = await db.documents.find_one(
+        {"id": document_id, "user_id": current_user.id}, {"_id": 0}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    found = find_audio_upload(current_user.id, document_id)
+    if not found:
+        raise HTTPException(status_code=404, detail="No audiobook uploaded for this document.")
+    path, ext = found
+    title = doc.get("title") or "Untitled"
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", title).strip("_") or "audiobook"
+    return Response(
+        content=path.read_bytes(),
+        media_type=audio_media_type(ext),
+        headers={"Content-Disposition": f'inline; filename="{safe_name}.{ext}"'},
+    )
+
+
+@api_router.delete("/documents/{document_id}/audiobook")
+async def remove_audiobook(
+    document_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    doc = await db.documents.find_one(
+        {"id": document_id, "user_id": current_user.id}, {"_id": 0}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    deleted = delete_audio_upload(current_user.id, document_id)
+    return {"deleted": deleted}
+
+
+@api_router.get("/documents/{document_id}/audiobook/info")
+async def audiobook_info(
+    document_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    doc = await db.documents.find_one(
+        {"id": document_id, "user_id": current_user.id}, {"_id": 0}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    found = find_audio_upload(current_user.id, document_id)
+    if not found:
+        return {"uploaded": False}
+    path, ext = found
+    return {
+        "uploaded": True,
+        "filename": path.name,
+        "extension": ext,
+        "size_bytes": path.stat().st_size,
+    }
 
 
 # --- EXPORT ROUTES ---

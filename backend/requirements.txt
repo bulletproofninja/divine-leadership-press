@@ -18,6 +18,7 @@ distro==1.9.0
 dnspython==2.8.0
 EbookLib==0.20
 ecdsa==0.19.1
+elevenlabs==2.49.0
 email-validator==2.3.0
 emergentintegrations==0.1.2
 fastapi==0.110.1

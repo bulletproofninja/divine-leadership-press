@@ -1,0 +1,50 @@
+{
+  "summary": "Iteration 6 — ElevenLabs integration (per-user API key + voices/preview/audiobook) + Audiobook MP3 uploads. Backend 21/22 pytest pass (95%), 1 real bug found (ElevenLabs preview with bad key returns 502 instead of 401). All 44 previous regression tests still pass. Frontend Playwright UI flow fully passes: 3 audio tabs render, OpenAI controls intact, ElevenLabs save-key shows both 'saved' and 'rejected' toasts plus connected state, clear-key returns to setup, Upload tab uploads file → status + player + remove all work.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/elevenlabs/preview",
+        "issue": "With a saved-but-invalid ElevenLabs key, this endpoint returns 502 (ElevenLabs error: ...status_code: 401...) instead of the expected 401 'ElevenLabs API key was rejected'. The /api/elevenlabs/voices endpoint correctly returns 401 in the same scenario. ROOT CAUSE: in /app/backend/elevenlabs_narrator.py::_synthesise, client.text_to_speech.convert() returns a lazy generator. The actual HTTPS call (and the 401) happens inside `for chunk in gen:` on line ~145, which is OUTSIDE the try/except wrapping only `gen = client.text_to_speech.convert(...)` (lines 125-142). The auth-keyword detection in the except block never runs, so server.py wraps it as ElevenLabsServiceError → 502. FIX: extend the try/except to also wrap the `for chunk in gen` iteration loop.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "POST /api/documents/{id}/audiobook/upload",
+        "issue": "Response's `filename` field returns the on-disk filename ({document_id}.{ext}) rather than the user-supplied original (e.g. 'intro.mp3'). Works, but the UI shows a UUID-looking filename next to the player which is unfriendly. Consider storing & returning the original filename separately."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_elevenlabs_upload.py",
+    "/app/test_reports/pytest/pytest_elevenlabs_results.xml"
+  ],
+  "action_items": [
+    "Fix /app/backend/elevenlabs_narrator.py::_synthesise — extend try/except to wrap the `for chunk in gen` iteration so 401s from the lazy generator are properly classified as ElevenLabsAuthError (currently they leak as generic Exception → ElevenLabsServiceError → 502). The voices endpoint works because `client.voices.get_all()` is eager; only TTS uses the lazy stream.",
+    "Optional UX polish: in upload_audiobook response, return the original `file.filename` (sanitized) so the UI shows 'intro.mp3' instead of 'b7c83f84-fa7c-4562-9a8e-bc6942c91bfd.mp3'."
+  ],
+  "critical_code_review_comments": [
+    "/app/backend/elevenlabs_narrator.py:_synthesise — auth-error detection block is unreachable for TTS calls because the SDK's convert() returns a generator (errors fire during iteration, outside the try/except). High-priority defect, single-file fix.",
+    "/app/frontend/src/pages/EditorPage.js is now 1559 lines — well over the 700-line guideline. The Audio Studio panel (3 tabs, ~300 lines) is a clear extraction candidate; previously flagged in iteration 5 review.",
+    "save_audio_upload writes synchronously inside an async endpoint (`path.write_bytes(data)`). For small MP3s this is fine, but for the documented 200 MB max it will block the event loop; consider asyncio.to_thread.",
+    "Upload endpoint accepts files based purely on extension (ALLOWED_EXTENSIONS in audio_uploads.py); no magic-byte validation. A user could upload a renamed .exe as 'intro.mp3' and bypass the .exe block. Acceptable for a trusted authoring tool but worth a note."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_elevenlabs_upload.py (new — 22 tests)"
+  ],
+  "success_rate": {
+    "backend": "95% (21/22 new tests pass; 44/44 prior regression tests still pass)",
+    "frontend": "100% — all 3 audio tabs render, OpenAI/ElevenLabs/Upload flows all work; both expected toasts ('ElevenLabs key saved' + 'ElevenLabs rejected your key') observed; clear-key reverts; upload + remove cycle works"
+  },
+  "test_credentials": "Fresh per-run users (TEST_eluiu_<ts>@example.com / P@ssword123) — no shared seed. Fake ElevenLabs key 'sk_fake_1234567890abcdefghijklmn' (32 chars) used everywhere; real ElevenLabs API rejects it with 401 as expected.",
+  "seed_data_creation": "Per-test ephemeral TEST_ users + documents via /api/auth/register and /api/documents.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend pytest: /app/backend/tests/test_elevenlabs_upload.py covers ALL iteration-6 endpoints (key mgmt, voices, preview, elevenlabs-audiobook cross-user, upload happy/bad-ext/empty/cross-user, fetch, info, delete, plus 401 unauthenticated gates). One assertion intentionally left to fail to surface the _synthesise lazy-generator bug — re-run after fix expects test_preview_fake_key_returns_401 to pass (status_code in (400, 401), currently 502). Frontend flow already validated; main agent can re-run the script in iteration_6 history after the backend fix to confirm the 'ElevenLabs rejected your key' toast still appears (now via 401 from preview as well as voices).",
+  "rca of the issue": "BUG: POST /api/elevenlabs/preview returns 502 instead of 401 for invalid keys. File: /app/backend/elevenlabs_narrator.py. Function: _synthesise (lines 114-150). The current code only wraps `gen = client.text_to_speech.convert(...)` in try/except, but the ElevenLabs SDK's convert() returns a lazy iterator — the actual API call and resulting 401 ApiError occur inside `for chunk in gen:` on line 145, OUTSIDE the protective try/except. So the auth-keyword pattern match on lines 139-141 never runs for TTS auth failures; the error escapes as a plain Exception. server.py's outer handler then maps it to 502 ElevenLabsServiceError because the catch order is `except ElevenLabsAuthError` first, then `except ElevenLabsServiceError`, then generic. REPRODUCTION: PUT /api/auth/me/elevenlabs-key with any 20+ char fake key, then POST /api/elevenlabs/preview with {text:'hi', voice_id:'21m00Tcm4TlvDq8ikWAM'} — observe 502 with body containing 'status_code: 401, body: {...invalid_api_key...}'. FIX (single-file, ~5 LOC): widen the try/except in _synthesise to enclose the `for chunk in gen` loop and the final empty-audio check, keeping the same auth/service classification. After fix, the eleven-key-input save flow in the UI will get a true 401 from both voices AND preview consistently; the user-facing toast text is unchanged."
+}
