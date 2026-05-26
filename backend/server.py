@@ -58,6 +58,8 @@ from cover_uploads import (
     media_type_for as cover_media_type,
     ALLOWED_EXTENSIONS as COVER_ALLOWED_EXTENSIONS,
 )
+from transcription import transcribe_audio
+from image_to_pdf import image_to_pdf
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -1107,6 +1109,113 @@ async def remove_cover(
             {"$set": {"cover_image_ext": None, "updated_at": datetime.now(timezone.utc).isoformat()}},
         )
     return {"deleted": deleted}
+
+
+# --- COVER PDF (for KDP paperback submission) ---
+
+@api_router.post("/documents/{document_id}/cover/pdf")
+async def cover_to_pdf(
+    document_id: str,
+    trim: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+):
+    doc = await db.documents.find_one(
+        {"id": document_id, "user_id": current_user.id}, {"_id": 0}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    found = find_cover_upload(current_user.id, document_id)
+    if not found:
+        raise HTTPException(status_code=404, detail="No cover image uploaded. Upload a cover first.")
+    path, _ext = found
+
+    trim_key = (trim or doc.get("format") or "6x9").strip()
+    if trim_key not in KDP_TRIM_SIZES:
+        trim_key = "6x9"
+
+    title = doc.get("title") or "Untitled"
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", title).strip("_") or "cover"
+
+    try:
+        pdf_bytes = image_to_pdf(
+            image_bytes=path.read_bytes(),
+            trim_key=trim_key,
+            title=f"{title} — Cover",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Cover-to-PDF failed")
+        raise HTTPException(status_code=500, detail=f"Cover PDF generation failed: {exc}")
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_name}_cover_{trim_key}.pdf"',
+            "X-Trim-Size": trim_key,
+        },
+    )
+
+
+@api_router.post("/tools/image-to-pdf")
+async def generic_image_to_pdf(
+    file: UploadFile = File(...),
+    trim: str = "6x9",
+    current_user: User = Depends(get_current_user),
+):
+    """Generic JPG/PNG/WebP → PDF converter at any KDP trim size."""
+    if trim not in KDP_TRIM_SIZES:
+        trim = "6x9"
+    data = await file.read()
+    if len(data) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Image too large (max 20 MB).")
+    try:
+        pdf_bytes = image_to_pdf(
+            image_bytes=data,
+            trim_key=trim,
+            title=(file.filename or "Image"),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Generic image-to-PDF failed")
+        raise HTTPException(status_code=500, detail=f"Conversion failed: {exc}")
+
+    base = (file.filename or "image").rsplit(".", 1)[0]
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", base).strip("_") or "image"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe}_{trim}.pdf"',
+            "X-Trim-Size": trim,
+        },
+    )
+
+
+# --- DICTATION (Whisper STT) ---
+
+@api_router.post("/transcribe")
+async def transcribe_dictation(
+    file: UploadFile = File(...),
+    language: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+):
+    """Transcribe a recorded audio chunk into plain text for the manuscript editor."""
+    data = await file.read()
+    try:
+        text = await transcribe_audio(
+            data=data,
+            filename=file.filename or "recording.webm",
+            language=language,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Transcription failed")
+        raise HTTPException(status_code=502, detail=f"Transcription service error: {exc}")
+    return {"text": text, "language": language, "filename": file.filename}
 
 
 # --- EXPORT ROUTES ---

@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
-import { ArrowLeft, Save, Download, History, MessageSquare, Settings, Eye, Globe, Loader2, FileType, BookOpen, Sparkles, Check, X, ScanSearch, AlertCircle, Lightbulb, FileSearch, Headphones, Play, Pause, ImageIcon, Trash2 } from 'lucide-react';
+import { ArrowLeft, Save, Download, History, MessageSquare, Settings, Eye, Globe, Loader2, FileType, BookOpen, Sparkles, Check, X, ScanSearch, AlertCircle, Lightbulb, FileSearch, Headphones, Play, Pause, ImageIcon, Trash2, Mic, MicOff, FileDown } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -151,6 +151,13 @@ export default function EditorPage({ user }) {
   const [coverPreviewUrl, setCoverPreviewUrl] = useState(null);
   const [uploadingCover, setUploadingCover] = useState(false);
   const [savingMetadata, setSavingMetadata] = useState(false);
+  const [downloadingCoverPdf, setDownloadingCoverPdf] = useState(false);
+  // Dictation
+  const [isRecording, setIsRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
+  const quillRef = useRef(null);
 
   useEffect(() => {
     fetchDocument();
@@ -755,6 +762,118 @@ export default function EditorPage({ user }) {
     }
   };
 
+  const downloadCoverPdf = async () => {
+    setDownloadingCoverPdf(true);
+    try {
+      const r = await axios.post(
+        `${API}/documents/${documentId}/cover/pdf?trim=${encodeURIComponent(pdfTrim)}`,
+        {},
+        { ...getAuthHeaders(), responseType: 'blob' }
+      );
+      const blob = new Blob([r.data], { type: 'application/pdf' });
+      const url = window.URL.createObjectURL(blob);
+      const a = window.document.createElement('a');
+      a.href = url;
+      const safe = (title || 'cover').replace(/[^A-Za-z0-9._-]+/g, '_');
+      a.download = `${safe}_cover_${pdfTrim}.pdf`;
+      window.document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      toast.success(`Cover PDF downloaded (${pdfTrim})`);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Cover PDF generation failed');
+    } finally {
+      setDownloadingCoverPdf(false);
+    }
+  };
+
+  // --- Dictation (Whisper) ---
+  const insertAtCursor = (text) => {
+    if (!text) return;
+    const editor = quillRef.current?.getEditor?.();
+    if (editor) {
+      const range = editor.getSelection(true);
+      const index = range ? range.index : editor.getLength();
+      // Add a leading space if we're appending inside existing text
+      const prefix = index > 0 ? ' ' : '';
+      editor.insertText(index, prefix + text, 'user');
+      editor.setSelection(index + prefix.length + text.length, 0);
+      setContent(editor.root.innerHTML);
+    } else {
+      // Fallback if Quill ref not available — append at end
+      setContent((prev) => `${prev || ''}<p>${text.replace(/\n/g, '<br>')}</p>`);
+    }
+  };
+
+  const startDictation = async () => {
+    if (isRecording || transcribing) return;
+    if (!navigator.mediaDevices?.getUserMedia) {
+      toast.error('Microphone is not available in this browser');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/webm')
+          ? 'audio/webm'
+          : 'audio/ogg';
+      const recorder = new MediaRecorder(stream, { mimeType: mime });
+      mediaRecorderRef.current = recorder;
+      audioChunksRef.current = [];
+
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+      recorder.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        const blob = new Blob(audioChunksRef.current, { type: mime });
+        audioChunksRef.current = [];
+        if (blob.size < 256) {
+          toast.error('Recording too short — try again');
+          setTranscribing(false);
+          return;
+        }
+        setTranscribing(true);
+        try {
+          const fd = new FormData();
+          fd.append('file', blob, mime.includes('ogg') ? 'recording.ogg' : 'recording.webm');
+          const r = await axios.post(`${API}/transcribe`, fd, {
+            ...getAuthHeaders(),
+            headers: { ...getAuthHeaders().headers, 'Content-Type': 'multipart/form-data' },
+            timeout: 300000,
+          });
+          const text = (r.data?.text || '').trim();
+          if (!text) {
+            toast.error('Nothing detected — try again');
+          } else {
+            insertAtCursor(text);
+            toast.success('Dictation added');
+          }
+        } catch (error) {
+          toast.error(error.response?.data?.detail || 'Transcription failed', { duration: 7000 });
+        } finally {
+          setTranscribing(false);
+        }
+      };
+
+      recorder.start();
+      setIsRecording(true);
+      toast.success('Recording — click Stop when done');
+    } catch (error) {
+      toast.error(error.message || 'Microphone permission denied');
+    }
+  };
+
+  const stopDictation = () => {
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state === 'recording') {
+      recorder.stop();
+    }
+    setIsRecording(false);
+  };
+
   const handlePublish = async (platform) => {
     try {
       const endpoint = platform === 'kdp' ? '/integrations/kdp' : '/integrations/lulu';
@@ -843,6 +962,23 @@ export default function EditorPage({ user }) {
               Preview
             </Button>
             <Button
+              data-testid={isRecording ? 'stop-dictate-btn' : 'start-dictate-btn'}
+              variant={isRecording ? 'destructive' : 'outline'}
+              size="sm"
+              onClick={isRecording ? stopDictation : startDictation}
+              disabled={transcribing}
+              className="rounded-sm"
+              title={isRecording ? 'Stop dictation' : 'Dictate (Whisper)'}
+            >
+              {transcribing ? (
+                <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Transcribing…</>
+              ) : isRecording ? (
+                <><MicOff className="h-4 w-4 mr-2" /> Stop</>
+              ) : (
+                <><Mic className="h-4 w-4 mr-2" /> Dictate</>
+              )}
+            </Button>
+            <Button
               data-testid="save-btn"
               size="sm"
               onClick={handleSave}
@@ -923,6 +1059,7 @@ export default function EditorPage({ user }) {
                   </div>
                 )}
                 <ReactQuill
+                  ref={quillRef}
                   theme="snow"
                   value={content}
                   onChange={setContent}
@@ -1171,15 +1308,31 @@ export default function EditorPage({ user }) {
                       </Button>
                     </label>
                     {coverPreviewUrl && (
-                      <Button
-                        data-testid="cover-remove-btn"
-                        size="sm"
-                        variant="ghost"
-                        className="w-full rounded-sm text-xs"
-                        onClick={removeCover}
-                      >
-                        <Trash2 className="h-3.5 w-3.5 mr-1" /> Remove
-                      </Button>
+                      <>
+                        <Button
+                          data-testid="cover-pdf-btn"
+                          size="sm"
+                          variant="outline"
+                          className="w-full rounded-sm text-xs"
+                          disabled={downloadingCoverPdf}
+                          onClick={downloadCoverPdf}
+                        >
+                          {downloadingCoverPdf ? (
+                            <><Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> Generating…</>
+                          ) : (
+                            <><FileDown className="h-3.5 w-3.5 mr-1" /> Download Cover as PDF</>
+                          )}
+                        </Button>
+                        <Button
+                          data-testid="cover-remove-btn"
+                          size="sm"
+                          variant="ghost"
+                          className="w-full rounded-sm text-xs"
+                          onClick={removeCover}
+                        >
+                          <Trash2 className="h-3.5 w-3.5 mr-1" /> Remove
+                        </Button>
+                      </>
                     )}
                     <p className="text-[10px] text-muted-foreground">JPG/PNG/WebP, ≤10 MB. KDP recommends 1600×2560.</p>
                   </div>

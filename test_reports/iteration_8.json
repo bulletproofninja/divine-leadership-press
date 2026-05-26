@@ -1,0 +1,40 @@
+{
+  "summary": "Iteration 8 — Whisper dictation (POST /api/transcribe) + cover-image → PDF (POST /api/documents/{id}/cover/pdf) + generic image → PDF (POST /api/tools/image-to-pdf). Backend pytest 17/17 NEW pass, 39/39 regression pass (test_pipeline_cover + test_upload_export + test_ai_editorial). Frontend: Dictate button (start-dictate-btn) renders in editor toolbar, clicking it gracefully toasts 'Requested device not found' in headless (mic absent — MediaRecorder feature path verified); cover-pdf-btn appears under cover preview alongside cover-remove-btn, clicking it triggers a real download named 'Iter8_UI_Book_cover_6x9.pdf' and shows toast 'Cover PDF downloaded (6x9)'.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_dictation_and_cover_pdf.py",
+    "/app/test_reports/pytest/pytest_iter8_results.xml"
+  ],
+  "action_items": [
+    "Optional cleanup: prior iter 7 'react-hooks/exhaustive-deps unknown rule' ESLint overlay was NOT triggered in this run (editor rendered cleanly without overlay removal needed for click interception). If still present in some environments, the prior recommendation (remove the orphaned eslint-disable comment in EditorPage.js, or re-add eslint-plugin-react-hooks) stands.",
+    "Code-quality nit: /app/frontend/src/pages/EditorPage.js is now ~1996 lines — extract Book-Setup panel and dictation logic into dedicated modules per the prior code-review note.",
+    "Security: /api/tools/image-to-pdf relies on PIL.Image.open to validate type but only after reading the full upload (≤20 MB). Consider an early content-type or magic-byte short-circuit to avoid loading 20 MB of garbage."
+  ],
+  "critical_code_review_comments": [
+    "transcription.py — _clean() collapses tabs/runs of spaces inside paragraphs which is fine, but Whisper may legitimately return long single-space sequences after ellipses; tested with silent WAV so no regression observable. The MAX_BYTES guard (24 MB) at endpoint feeds into Whisper's 25 MB cap correctly.",
+    "image_to_pdf.py — cover-crop fills the trim and may crop edges (documented behaviour). The intermediate JPEG re-encode at quality=92 is fine for KDP but loses any original PNG transparency edges — acceptable for cover use only.",
+    "server.py cover_to_pdf (line 1132) silently downgrades invalid trim to 6x9 instead of 400 — matches spec, but consider documenting in API response (e.g., X-Trim-Size-Resolved header) so callers can detect the silent fallback. Currently X-Trim-Size echoes the resolved value, which works.",
+    "EditorPage.js downloadCoverPdf uses responseType:'blob' + a hidden <a> + URL.createObjectURL — correct pattern. Toast shows the resolved trim from local pdfTrim state, not the server's X-Trim-Size header — fine since the client controls trim, but a server-side fallback would be invisible to the user."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_dictation_and_cover_pdf.py (new — 17 tests, all pass)"
+  ],
+  "success_rate": {
+    "backend": "100% (17/17 new dictation+cover-PDF tests pass; 39/39 prior regression tests still pass)",
+    "frontend": "100% on tested flows (Dictate button render + graceful no-mic toast; cover-pdf-btn visible alongside cover-remove-btn; download triggered with correct filename; success toast shown)"
+  },
+  "test_credentials": "Fresh per-run users TEST_dict_<ts>_<pid>@example.com / P@ssword123 (backend) and TEST_iter8ui_<ts>@example.com / P@ssword123 (frontend). No shared seed.",
+  "seed_data_creation": "Per-test ephemeral TEST_ users + documents via /api/auth/register and /api/documents. Cover artifacts in /app/backend/uploads/covers/<user_id>/. WAV (silent, 0.5s @ 16 kHz, mono) and 800×1280 navy JPEG generated in-memory via wave + PIL for upload bodies.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend: /app/backend/tests/test_dictation_and_cover_pdf.py covers all 14 spec items + 3 regression checks. Run with REACT_APP_BACKEND_URL set. All pass against the external preview URL. Frontend Playwright flow: register + create doc + upload JPG cover via in-page fetch (urllib direct fails with 403 from ingress — must use page.evaluate fetch), inject token+user into localStorage, then navigate to /editor/:id. start-dictate-btn at toolbar, cover-pdf-btn + cover-remove-btn both visible when coverPreviewUrl set. Download intercepted via page.expect_download. Dictation clicking will toast 'Requested device not found' or 'Microphone is not available' in headless — to test real audio, use playwright context with permissions=['microphone'] AND --use-fake-device-for-media-stream/--use-fake-ui-for-media-stream Chrome flags.",
+  "rca of the issue": "N/A — no failures observed in this iteration."
+}
