@@ -1,20 +1,25 @@
 from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Depends, Header
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
+import re
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict, EmailStr
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 import uuid
 from datetime import datetime, timezone, timedelta
 import bcrypt
 import jwt
-from docx import Document
-import io
-import base64
+
+from exporters import (
+    docx_to_html,
+    generate_pdf,
+    generate_epub,
+    KDP_TRIM_SIZES,
+)
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -387,35 +392,56 @@ async def delete_document(document_id: str, current_user: User = Depends(get_cur
 
 @api_router.post("/documents/upload")
 async def upload_document(file: UploadFile = File(...), current_user: User = Depends(get_current_user)):
-    content = ""
     filename = file.filename or "untitled"
-    
-    if filename.endswith('.docx'):
-        file_content = await file.read()
-        doc = Document(io.BytesIO(file_content))
-        content = "\n\n".join([paragraph.text for paragraph in doc.paragraphs])
-    elif filename.endswith('.txt'):
-        file_content = await file.read()
-        content = file_content.decode('utf-8')
+    lower = filename.lower()
+
+    if lower.endswith(".pages"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Apple Pages files (.pages) are not supported directly. "
+                "Please open the file in Pages, then choose File → Export To → Word (.docx), "
+                "and upload the resulting .docx file."
+            ),
+        )
+
+    if lower.endswith(".docx"):
+        file_bytes = await file.read()
+        try:
+            content = docx_to_html(file_bytes)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Could not parse .docx file: {exc}")
+    elif lower.endswith(".txt"):
+        file_bytes = await file.read()
+        try:
+            raw = file_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            raw = file_bytes.decode("latin-1", errors="replace")
+        # Convert plain text paragraphs (blank-line separated) into HTML
+        paragraphs = [p.strip() for p in re.split(r"\n\s*\n", raw) if p.strip()]
+        content = "".join(f"<p>{p.replace(chr(10), '<br>')}</p>" for p in paragraphs) or "<p></p>"
     else:
-        raise HTTPException(status_code=400, detail="Unsupported file format. Please upload .docx or .txt files")
-    
-    # Create document
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported file format. Please upload a .docx or .txt file. "
+                   "For .pages files, export from Apple Pages as .docx first.",
+        )
+
     title = filename.rsplit('.', 1)[0]
     document = DocumentModel(
         title=title,
         content=content,
         user_id=current_user.id,
-        original_filename=filename
+        original_filename=filename,
     )
-    
+
     initial_version = Version(
         content=content,
         created_by=current_user.id,
-        version_number=1
+        version_number=1,
     )
     document.versions.append(initial_version)
-    
+
     doc = document.model_dump()
     doc['created_at'] = doc['created_at'].isoformat()
     doc['updated_at'] = doc['updated_at'].isoformat()
@@ -423,9 +449,9 @@ async def upload_document(file: UploadFile = File(...), current_user: User = Dep
         **v,
         'created_at': v['created_at'].isoformat() if isinstance(v['created_at'], datetime) else v['created_at']
     } for v in doc['versions']]
-    
+
     await db.documents.insert_one(doc)
-    
+
     return DocumentResponse(
         id=document.id,
         title=document.title,
@@ -437,7 +463,7 @@ async def upload_document(file: UploadFile = File(...), current_user: User = Dep
         created_at=document.created_at,
         updated_at=document.updated_at,
         version_count=len(document.versions),
-        comment_count=len(document.comments)
+        comment_count=len(document.comments),
     )
 
 # --- VERSION ROUTES ---
@@ -499,22 +525,105 @@ async def get_comments(document_id: str, current_user: User = Depends(get_curren
     
     return result
 
-# --- EXPORT ROUTES (Mocked integrations for KDP, LULU) ---
+# --- EXPORT ROUTES ---
 
-@api_router.post("/documents/{document_id}/export")
-async def export_document(document_id: str, format: str, current_user: User = Depends(get_current_user)):
-    doc = await db.documents.find_one({"id": document_id, "user_id": current_user.id}, {"_id": 0})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
-    
-    # This is a simplified export - in production would generate actual files
+@api_router.get("/export/formats")
+async def list_export_formats():
+    """Return all supported KDP trim sizes plus digital formats."""
     return {
-        "message": f"Document exported to {format}",
-        "document_id": document_id,
-        "format": format,
-        "title": doc['title']
+        "print_trim_sizes": [
+            {"key": k, "width_in": w, "height_in": h, "label": _trim_label(k, w, h)}
+            for k, (w, h) in KDP_TRIM_SIZES.items()
+        ],
+        "digital": [
+            {"key": "epub", "label": "ePub (Digital eBook)"},
+        ],
     }
 
+
+def _trim_label(key: str, w: float, h: float) -> str:
+    common = {
+        "5x8": "5×8 — Mass-market paperback",
+        "5.06x7.81": "5.06×7.81 — Pocket / A-format",
+        "5.25x8": "5.25×8 — Trade",
+        "5.5x8.5": "5.5×8.5 — Digest",
+        "6x9": "6×9 — Standard novel (most popular)",
+        "6.14x9.21": "6.14×9.21 — UK Royal",
+        "6.69x9.61": "6.69×9.61 — UK Crown Quarto",
+        "7x10": "7×10 — Textbook",
+        "7.44x9.69": "7.44×9.69 — Large textbook",
+        "7.5x9.25": "7.5×9.25 — Crown Quarto",
+        "8x10": "8×10 — Workbook",
+        "8.5x11": "8.5×11 — Magazine / Letter",
+    }
+    return common.get(key, f"{w}×{h}")
+
+
+@api_router.post("/documents/{document_id}/export")
+async def export_document(
+    document_id: str,
+    format: str,
+    trim: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Generate and return a downloadable file.
+    - format: 'pdf' or 'epub'
+    - trim: trim-size key for PDF (e.g. '6x9', '8.5x11'); defaults to document.format or '6x9'
+    """
+    doc = await db.documents.find_one(
+        {"id": document_id, "user_id": current_user.id}, {"_id": 0}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    title = doc.get("title") or "Untitled"
+    content = doc.get("content") or ""
+    metadata = doc.get("metadata") or {}
+    author = metadata.get("author") or current_user.name
+    publisher = metadata.get("publisher")
+
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", title).strip("_") or "document"
+
+    if format == "pdf":
+        trim_key = trim or doc.get("format") or "6x9"
+        if trim_key not in KDP_TRIM_SIZES:
+            trim_key = "6x9"
+        pdf_bytes = generate_pdf(
+            title=title,
+            author=author,
+            html_content=content,
+            trim_key=trim_key,
+            publisher=publisher,
+        )
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="{safe_name}_{trim_key}.pdf"',
+                "X-Trim-Size": trim_key,
+            },
+        )
+
+    if format == "epub":
+        epub_bytes = generate_epub(
+            title=title,
+            author=author,
+            html_content=content,
+            publisher=publisher,
+        )
+        return Response(
+            content=epub_bytes,
+            media_type="application/epub+zip",
+            headers={
+                "Content-Disposition": f'attachment; filename="{safe_name}.epub"',
+            },
+        )
+
+    raise HTTPException(status_code=400, detail=f"Unsupported export format: {format}")
+
+
+# --- PUBLISHING PARTNER ROUTES (preparation only, not direct API integrations) ---
 @api_router.post("/integrations/kdp")
 async def publish_to_kdp(document_id: str, current_user: User = Depends(get_current_user)):
     doc = await db.documents.find_one({"id": document_id, "user_id": current_user.id}, {"_id": 0})

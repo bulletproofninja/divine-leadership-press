@@ -1,0 +1,42 @@
+{
+  "summary": "Comprehensive backend + frontend testing of Divine Leadership Press upload + KDP-trim export features. All 14 pytest backend tests passed (upload .docx/.txt, .pages rejection, unsupported PDF rejection, all KDP trim PDFs incl 6x9/8.5x11/5x8, default trim, ePub, unsupported export format, cross-user 404, auth-required). All 4 frontend flows passed (long instructional toast on .pages upload, trim selector populated from /api/export/formats with all 12 KDP sizes, PDF download with correct filename including trim, ePub download). Real PDF (%PDF) and real ePub (PK zip) bytes verified.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/auth/*", "issue": "server.py uses jwt.JWTError; PyJWT 2.x exposes jwt.PyJWTError. Currently works because ExpiredSignatureError is caught explicitly, but invalid (non-expired) tokens would raise an uncaught exception if PyJWT version drops JWTError alias. Consider switching to jwt.PyJWTError or jwt.InvalidTokenError."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Dashboard / Auth modal", "issues": ["React warning: Missing `Description` or `aria-describedby` on DialogContent for auth-modal and new-document-dialog (a11y nit, non-blocking)."]},
+      {"screen": "EditorPage Format Preview", "issues": ["The 'Format Preview' panel only describes 6x9/5x8/8.5x11/epub. Documents created via upload default to 6x9 so this is fine, but if a doc's format is one of the other 9 KDP trims the description is blank. Cosmetic only."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_upload_export.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Optional: replace jwt.JWTError with jwt.PyJWTError (PyJWT 2.x compatibility hardening).",
+    "Optional: add DialogDescription to DialogContent in Dashboard/AuthModal to silence a11y warning.",
+    "Optional: extend Format Preview text mapping to cover all 12 KDP trim keys."
+  ],
+  "critical_code_review_comments": [
+    "exporters._html_to_rl_flowables: list-item numbering uses el.find_all('li').index(li) inside the loop which is O(n^2) per list and re-evaluates each iteration; for long ordered lists this will be slow and the bullet may be wrong if duplicate li objects exist. Use enumerate() instead.",
+    "exporters.docx_to_html: precedence bug in `'list bullet' in style_name or 'list paragraph' in style_name and para.text.startswith(...)` — `and` binds tighter than `or`, so `list paragraph` style alone (without bullet prefix) will still match the first branch via the `or`. Wrap the bullet condition in parentheses.",
+    "server.py uses jwt.JWTError (deprecated alias). Prefer jwt.PyJWTError.",
+    "server.py: every read converts created_at/updated_at strings to datetime objects repeatedly — consider storing as datetime in Mongo or centralising the serializer.",
+    "server.py is ~680 lines and mixes auth, documents, uploads, exports, integrations — consider splitting into routers/auth.py, routers/documents.py, routers/exports.py per the 700-line guideline (currently borderline)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_upload_export.py (new pytest module)"
+  ],
+  "success_rate": {"backend": "100% (14/14)", "frontend": "100% (4/4 critical flows)"},
+  "test_credentials": "None pre-seeded. Tests register fresh users on the fly (TEST_user_a_<ts>@example.com / Passw0rd!). /app/memory/test_credentials.md is MISSING — flag for main agent if a fixed user is desired.",
+  "seed_data_creation": "Per-run TEST_ prefixed users and uploaded test docs; not cleaned up but isolated by unique timestamps.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend pytest at /app/backend/tests/test_upload_export.py covers upload (.docx/.txt/.pages/.pdf), /api/export/formats and POST /api/documents/{id}/export for pdf (all trims), epub, default trim, unsupported format and cross-user 404. Re-run with: pytest /app/backend/tests/test_upload_export.py -v. Frontend smoke covered .pages toast text, trim dropdown population, PDF + ePub downloads via Playwright expect_download. All passing as of this iteration."
+}

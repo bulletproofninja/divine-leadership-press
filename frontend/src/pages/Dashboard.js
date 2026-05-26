@@ -84,9 +84,11 @@ export default function Dashboard({ user, onLogout }) {
       toast.success('Document uploaded');
       navigate(`/editor/${response.data.id}`);
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to upload document');
+      const detail = error.response?.data?.detail || 'Failed to upload document';
+      toast.error(detail, { duration: 8000 });
     } finally {
       setUploading(false);
+      e.target.value = '';
     }
   };
 
@@ -170,7 +172,7 @@ export default function Dashboard({ user, onLogout }) {
             <input
               id="file-upload"
               type="file"
-              accept=".docx,.txt"
+              accept=".docx,.txt,.pages"
               className="hidden"
               onChange={handleFileUpload}
             />

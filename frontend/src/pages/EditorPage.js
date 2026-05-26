@@ -39,12 +39,24 @@ export default function EditorPage({ user }) {
   const [wordCount, setWordCount] = useState(0);
   const [trackChanges, setTrackChanges] = useState(false);
   const [styleTemplate, setStyleTemplate] = useState('default');
+  const [pdfTrim, setPdfTrim] = useState('6x9');
+  const [trimSizes, setTrimSizes] = useState([]);
 
   useEffect(() => {
     fetchDocument();
     fetchVersions();
     fetchComments();
+    fetchTrimSizes();
   }, [documentId]);
+
+  const fetchTrimSizes = async () => {
+    try {
+      const response = await axios.get(`${API}/export/formats`);
+      setTrimSizes(response.data.print_trim_sizes || []);
+    } catch (error) {
+      // Non-blocking; fall back to default
+    }
+  };
 
   useEffect(() => {
     // Calculate word count
@@ -60,6 +72,9 @@ export default function EditorPage({ user }) {
       setContent(response.data.content);
       setTitle(response.data.title);
       setMetadata(response.data.metadata || {});
+      if (response.data.format && response.data.format !== 'epub') {
+        setPdfTrim(response.data.format);
+      }
     } catch (error) {
       toast.error('Failed to load document');
       navigate('/dashboard');
@@ -121,14 +136,27 @@ export default function EditorPage({ user }) {
     }
   };
 
-  const handleExport = async (format) => {
+  const handleExport = async (format, trim) => {
     try {
-      await axios.post(
-        `${API}/documents/${documentId}/export?format=${format}`,
+      const trimQuery = format === 'pdf' && trim ? `&trim=${encodeURIComponent(trim)}` : '';
+      const response = await axios.post(
+        `${API}/documents/${documentId}/export?format=${format}${trimQuery}`,
         {},
-        getAuthHeaders()
+        { ...getAuthHeaders(), responseType: 'blob' }
       );
-      toast.success(`Exported to ${format}`);
+      const blob = new Blob([response.data], {
+        type: format === 'pdf' ? 'application/pdf' : 'application/epub+zip',
+      });
+      const url = window.URL.createObjectURL(blob);
+      const a = window.document.createElement('a');
+      a.href = url;
+      const safe = (title || 'document').replace(/[^A-Za-z0-9._-]+/g, '_');
+      a.download = format === 'pdf' ? `${safe}_${trim || pdfTrim}.pdf` : `${safe}.epub`;
+      window.document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      toast.success(`Exported ${format.toUpperCase()}${format === 'pdf' ? ` (${trim || pdfTrim})` : ''}`);
     } catch (error) {
       toast.error('Export failed');
     }
@@ -485,16 +513,36 @@ export default function EditorPage({ user }) {
             {/* Export & Publish */}
             <Card data-testid="export-panel" className="p-4 bg-card/50 backdrop-blur-sm">
               <h3 className="text-sm font-heading font-semibold mb-3">Export & Publish</h3>
-              <div className="space-y-2">
+              <div className="space-y-3">
+                <div>
+                  <Label className="text-xs">KDP Trim Size (PDF)</Label>
+                  <Select value={pdfTrim} onValueChange={setPdfTrim}>
+                    <SelectTrigger data-testid="pdf-trim-select" className="rounded-sm h-9 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(trimSizes.length > 0 ? trimSizes : [
+                        { key: '6x9', label: '6×9 — Standard novel' },
+                        { key: '5x8', label: '5×8 — Mass-market' },
+                        { key: '5.5x8.5', label: '5.5×8.5 — Digest' },
+                        { key: '8.5x11', label: '8.5×11 — Magazine' },
+                      ]).map((t) => (
+                        <SelectItem key={t.key} value={t.key} className="text-xs">
+                          {t.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
                 <Button
                   data-testid="export-pdf-btn"
                   variant="outline"
                   size="sm"
                   className="w-full justify-start rounded-sm"
-                  onClick={() => handleExport('pdf')}
+                  onClick={() => handleExport('pdf', pdfTrim)}
                 >
                   <Download className="h-4 w-4 mr-2" />
-                  Export PDF ({document?.format})
+                  Download PDF
                 </Button>
                 <Button
                   data-testid="export-epub-btn"
@@ -504,9 +552,9 @@ export default function EditorPage({ user }) {
                   onClick={() => handleExport('epub')}
                 >
                   <Download className="h-4 w-4 mr-2" />
-                  Export ePub
+                  Download ePub
                 </Button>
-                <Separator className="my-3" />
+                <Separator className="my-2" />
                 <Button
                   data-testid="publish-kdp-btn"
                   variant="outline"
@@ -515,7 +563,7 @@ export default function EditorPage({ user }) {
                   onClick={() => handlePublish('kdp')}
                 >
                   <Globe className="h-4 w-4 mr-2" />
-                  Publish to KDP
+                  Prepare for Amazon KDP
                 </Button>
                 <Button
                   data-testid="publish-lulu-btn"
@@ -525,7 +573,7 @@ export default function EditorPage({ user }) {
                   onClick={() => handlePublish('lulu')}
                 >
                   <Globe className="h-4 w-4 mr-2" />
-                  Publish to LULU
+                  Prepare for Lulu
                 </Button>
               </div>
             </Card>
