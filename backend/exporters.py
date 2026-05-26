@@ -86,7 +86,9 @@ def docx_to_html(file_bytes: bytes) -> str:
             continue
 
         # Lists (docx represents bullet/number lists via style names)
-        if "list bullet" in style_name or "list paragraph" in style_name and para.text.strip().startswith(("•", "-", "*")):
+        if "list bullet" in style_name or (
+            "list paragraph" in style_name and para.text.strip().startswith(("•", "-", "*"))
+        ):
             if list_open != "ul":
                 close_list()
                 html_parts.append("<ul>")
@@ -217,9 +219,10 @@ def _html_to_rl_flowables(html: str, styles: Dict[str, ParagraphStyle]) -> List:
             if inner.strip():
                 flowables.append(Paragraph(inner, styles["blockquote"]))
         elif name in ("ul", "ol"):
-            for li in el.find_all("li", recursive=False):
+            items = el.find_all("li", recursive=False)
+            for idx, li in enumerate(items):
                 inner = _inline_html(li)
-                bullet = "•" if name == "ul" else f"{el.find_all('li', recursive=False).index(li) + 1}."
+                bullet = "•" if name == "ul" else f"{idx + 1}."
                 flowables.append(Paragraph(f"{bullet} &nbsp;{inner}", styles["li"]))
         elif name == "br":
             flowables.append(Spacer(1, 8))
