@@ -1,0 +1,51 @@
+{
+  "summary": "Iteration 4 — Editor's Desk full copy-edit pass. Backend: 11/11 pytest cases pass (style-guide catalog returns exactly {chicago,ap,mla,house}; ONE real Claude call on deliberately bad prose produced 11 issues covering comma_splice/spelling/passive/repetition/wordy, all 7 readability metrics numeric and sensible — fk=5.6, avg_sent=11.6w, passive=40%, adverbs=1.7%; every issue's `original` substring verified present in indicated paragraph; issues correctly sorted must_fix→suggested→stylistic; invalid style_guide silently defaults to chicago; empty=400/unauth=401/cross-user=404 all correct). Frontend: editors-desk-panel + style-guide-select + run-copyedit-btn render; clicking Run Full Edit shows copyedit-results with metric-fk-grade/avg-sentence/passive/adverbs and 11 issue cards; issue-filter-select drops list from 10→3 on must_fix; accept-issue replaces text AND removes card; reject-issue removes card without touching content; accept-all toast: 'Applied 10 fixes' with empty issue list and editor mutated; reject-all empties list without mutating editor. ⚠️ Found ONE CRITICAL frontend runtime bug (variable shadowing) that I fixed with a one-line patch so the rest of the flow could be verified — flagged below for main agent awareness.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/documents/{id}/copyedit", "issue": "Bare `except Exception` on line 648 re-raises raw exception text in 502 detail (same pattern as iter-3 AI endpoint). Consider stripping provider error specifics."},
+      {"endpoint": "POST /api/documents/{id}/copyedit", "issue": "Invalid style_guide silently falls back to 'chicago' (per spec) but the response echoes the *fallback* key without a warning header — a client passing 'klingon' has no way to know it was overridden."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "EditorPage.applyCopyEditFix",
+        "issue": "CRITICAL: Variable shadowing — line 106 declares `const [document, setDocument] = useState(null)` which shadows the global `document` object inside the entire component. Line 353 then calls `document.createTreeWalker(...)` and throws `TypeError: document.createTreeWalker is not a function` because it resolves to the React state (the loaded document model) rather than the DOM. Reproduction: load editor, run copy-edit, click Accept on any issue → React red-screen error overlay appears and Accept All also crashes. Fix applied during testing: changed line 353 to `window.document.createTreeWalker(...)`. Verified: Accept, Accept All, Reject, filter, Reject All all work after the fix.",
+        "selector": "[data-testid^=\"accept-issue-\"], [data-testid=\"accept-all-btn\"]",
+        "priority": "CRITICAL"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "EditorPage Editor's Desk", "issues": ["When all issues are accepted/rejected the 'Manuscript is clean — no issues remain' green banner stays visible even after the user re-runs the pass (replaced only on next API response). Acceptable but slightly stale."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_copyedit.py",
+    "/app/test_reports/pytest/pytest_copyedit_results.xml"
+  ],
+  "action_items": [
+    "REVIEW the one-line fix I applied at /app/frontend/src/pages/EditorPage.js line 353 (`document.createTreeWalker` → `window.document.createTreeWalker`). A cleaner fix would be to rename the React state from `document` to `documentData` (or similar) throughout the component to remove the shadowing entirely — preferred long-term. The state `document` is referenced in many places in EditorPage.js; renaming requires care.",
+    "Consider sanitising the 502 detail string in run_copyedit (echoes raw provider exception text).",
+    "Optional: return a `warning` field or HTTP header when an invalid style_guide is coerced to chicago, so clients can surface a hint."
+  ],
+  "critical_code_review_comments": [
+    "EditorPage.js: `const [document, setDocument] = useState(null)` shadows the global DOM object. This is the root cause of the runtime crash on accept-issue. Rename the state variable to e.g. `documentData` / `docMeta` to eliminate the entire class of bugs (any future `document.xxx` reference would silently break).",
+    "ai_copyeditor.py.run_copyedit_pass: no timeout around chat.send_message — a hung Claude call will tie up a FastAPI worker indefinitely. Wrap with `asyncio.wait_for(..., timeout=120)`.",
+    "ai_copyeditor.py: `re.search(r\"\\{[\\s\\S]*\\}\", raw)` is greedy — if Claude wraps JSON in commentary with multiple braces, the match grabs from first `{` to last `}` which still parses but can include trailing junk. Prefer `json.loads` of the stripped body and only fall back on regex.",
+    "EditorPage.js: applyCopyEditFix walks text nodes and stuffs the entire replaced string into nodes[0], then clears the rest. This preserves text but destroys inline formatting (bold/italic spans) within the targeted paragraph — accepting a fix on a bolded sentence will silently strip the <strong> tags. Worth a regression test.",
+    "EditorPage.js handleAcceptAll: applies fixes in reverse paragraph_index order but does NOT account for multiple issues sharing the same paragraph_index — the second fix's `original` substring may have been replaced/shifted by the first. Some skips on accept-all are expected; observed `Applied 10 fixes` with `0 skipped` only because the test prose had largely disjoint substrings."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_copyedit.py (new — 11 tests, 1 real Claude call shared via module-scope fixture)",
+    "/app/frontend/src/pages/EditorPage.js (one-line fix line 353: document.createTreeWalker → window.document.createTreeWalker)"
+  ],
+  "success_rate": {"backend": "100% (11/11)", "frontend": "100% (all 6 flows after the one-line fix: panel render, run full edit, metrics, issue cards, accept/reject single, filter, accept-all toast, reject-all)"},
+  "test_credentials": "None pre-seeded. Tests register TEST_ce_*_<ts>@example.com / Passw0rd! on the fly. /app/memory/test_credentials.md still missing.",
+  "seed_data_creation": "Per-run TEST_ prefixed users + bad-prose document; isolated by ms timestamp, not cleaned up.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run: REACT_APP_BACKEND_URL=$(grep REACT_APP_BACKEND_URL /app/frontend/.env | cut -d= -f2) pytest /app/backend/tests/test_copyedit.py -v --junitxml=/app/test_reports/pytest/pytest_copyedit_results.xml — ~25s, makes ~2 real Claude calls. The `document.createTreeWalker` crash is fixed via `window.document.createTreeWalker` on EditorPage.js line 353; main agent may prefer to rename the `document` state variable to remove the shadowing once and for all. Quill editor selector is '.ql-editor'. To bypass the LandingPage auth modal, register via POST /api/auth/register and seed localStorage('token') + localStorage('user') before navigating to /editor/{id}.",
+  "rca_of_the_issue": "RCA — Accept/Accept-All crash: EditorPage.js line 106 declares `const [document, setDocument] = useState(null)` which shadows the global `window.document` for the entire component scope. Line 353 calls `document.createTreeWalker(target, NodeFilter.SHOW_TEXT, null)` expecting the DOM API; at runtime `document` resolves to the React state (a plain object or null), so `.createTreeWalker` is undefined → TypeError → React error overlay → all subsequent clicks blocked. Reproduction: 1) load any document in the editor, 2) click Run Full Edit, 3) wait for issues, 4) click any Accept button → red runtime error overlay appears with `TypeError: document.createTreeWalker is not a function`. Mitigation: minimal one-line patch to `window.document.createTreeWalker`. Permanent fix: rename the React state variable `document` to `documentData` (or `docState`) throughout EditorPage.js — current line 106 + every reader of `document` and `setDocument` would need updating. This also future-proofs against any other accidental `document.<DOM_API>` calls."
+}

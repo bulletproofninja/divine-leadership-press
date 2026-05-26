@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { ArrowLeft, Save, Download, History, MessageSquare, Settings, Eye, Globe, Loader2, FileType, BookOpen, Sparkles, Check, X } from 'lucide-react';
+import { ArrowLeft, Save, Download, History, MessageSquare, Settings, Eye, Globe, Loader2, FileType, BookOpen, Sparkles, Check, X, ScanSearch, AlertCircle, Lightbulb, FileSearch } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -21,6 +21,84 @@ const LOGO_URL = 'https://customer-assets.emergentagent.com/job_book-press/artif
 const getAuthHeaders = () => ({
   headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
 });
+
+const SEVERITY_BADGES = {
+  must_fix: { label: 'Must fix', cls: 'bg-red-100 text-red-800 border-red-200' },
+  suggested: { label: 'Suggested', cls: 'bg-amber-100 text-amber-800 border-amber-200' },
+  stylistic: { label: 'Stylistic', cls: 'bg-blue-100 text-blue-800 border-blue-200' },
+};
+
+const CATEGORY_LABELS = {
+  grammar: 'Grammar',
+  punctuation: 'Punctuation',
+  spelling: 'Spelling',
+  run_on: 'Run-on',
+  comma_splice: 'Comma splice',
+  passive: 'Passive voice',
+  wordy: 'Wordy',
+  repetition: 'Repetition',
+  consistency: 'Consistency',
+  clarity: 'Clarity',
+  tone: 'Tone',
+};
+
+function CopyEditIssueCard({ issue, onAccept, onReject }) {
+  const sev = SEVERITY_BADGES[issue.severity] || SEVERITY_BADGES.suggested;
+  return (
+    <div data-testid={`issue-${issue.id}`} className="border rounded-sm p-3 bg-card hover:bg-accent/30 transition-colors">
+      <div className="flex items-center justify-between mb-2 gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className={`text-[10px] px-1.5 py-0.5 rounded border font-mono uppercase tracking-wider ${sev.cls}`}>
+            {sev.label}
+          </span>
+          <span className="text-[11px] font-medium text-muted-foreground">
+            {CATEGORY_LABELS[issue.category] || issue.category}
+          </span>
+          <span className="text-[10px] text-muted-foreground">
+            ¶{issue.paragraph_index + 1}
+          </span>
+        </div>
+      </div>
+      <div className="space-y-1 mb-2">
+        <div className="text-xs">
+          <span className="text-red-700 line-through bg-red-50 px-1 rounded">
+            {issue.original}
+          </span>
+        </div>
+        <div className="text-xs">
+          <span className="text-emerald-800 bg-emerald-50 px-1 rounded font-medium">
+            {issue.suggestion}
+          </span>
+        </div>
+      </div>
+      {issue.rationale && (
+        <div className="flex items-start gap-1.5 text-[11px] text-muted-foreground italic mb-2">
+          <Lightbulb className="h-3 w-3 flex-shrink-0 mt-0.5" />
+          <span>{issue.rationale}</span>
+        </div>
+      )}
+      <div className="flex gap-2">
+        <Button
+          data-testid={`accept-issue-${issue.id}`}
+          size="sm"
+          className="flex-1 rounded-sm h-7 text-xs"
+          onClick={onAccept}
+        >
+          <Check className="h-3 w-3 mr-1" /> Accept
+        </Button>
+        <Button
+          data-testid={`reject-issue-${issue.id}`}
+          size="sm"
+          variant="ghost"
+          className="rounded-sm h-7 text-xs"
+          onClick={onReject}
+        >
+          <X className="h-3 w-3" />
+        </Button>
+      </div>
+    </div>
+  );
+}
 
 export default function EditorPage({ user }) {
   const navigate = useNavigate();
@@ -43,6 +121,11 @@ export default function EditorPage({ user }) {
   const [trimSizes, setTrimSizes] = useState([]);
   const [aiRunning, setAiRunning] = useState(null);
   const [aiResult, setAiResult] = useState(null); // { tool, label, result, result_type }
+  const [copyEditRunning, setCopyEditRunning] = useState(false);
+  const [copyEditData, setCopyEditData] = useState(null); // { issues, readability, style_guide, paragraph_count }
+  const [styleGuide, setStyleGuide] = useState('chicago');
+  const [styleGuides, setStyleGuides] = useState([]);
+  const [issueFilter, setIssueFilter] = useState('all');
 
   useEffect(() => {
     fetchDocument();
@@ -59,6 +142,12 @@ export default function EditorPage({ user }) {
       // Non-blocking; fall back to default
     }
   };
+
+  useEffect(() => {
+    axios.get(`${API}/copyedit/style-guides`).then((r) => {
+      setStyleGuides(r.data.style_guides || []);
+    }).catch(() => {});
+  }, []);
 
   useEffect(() => {
     // Calculate word count
@@ -215,6 +304,128 @@ export default function EditorPage({ user }) {
     } catch (_) {
       toast.error('Copy failed');
     }
+  };
+
+  const runCopyEdit = async () => {
+    setCopyEditRunning(true);
+    setCopyEditData(null);
+    try {
+      const response = await axios.post(
+        `${API}/documents/${documentId}/copyedit`,
+        { content, style_guide: styleGuide },
+        getAuthHeaders()
+      );
+      setCopyEditData(response.data);
+      const n = response.data.issues?.length || 0;
+      if (n === 0) {
+        toast.success('Manuscript is clean — no issues found.');
+      } else {
+        toast.success(`Found ${n} issue${n === 1 ? '' : 's'} to review.`);
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Copy editor failed', { duration: 7000 });
+    } finally {
+      setCopyEditRunning(false);
+    }
+  };
+
+  // Apply a single suggestion: replace `original` with `suggestion` in the matching paragraph.
+  // We locate the paragraph (Nth <p>/<h*>/<li>/<blockquote>) and do a first-occurrence replace.
+  const applyCopyEditFix = (issue) => {
+    if (!issue) return false;
+    const PARA_TAGS = ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'blockquote'];
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(`<root>${content || ''}</root>`, 'text/html');
+    const root = doc.querySelector('root');
+    if (!root) return false;
+    const blocks = Array.from(root.querySelectorAll(PARA_TAGS.join(',')));
+    const target = blocks[issue.paragraph_index];
+    if (!target) return false;
+
+    const html = target.innerHTML;
+    // Escape regex special chars in original (but keep whitespace flexible)
+    const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(escapeRegex(issue.original).replace(/\s+/g, '\\s+'), '');
+
+    // Try direct text replace first
+    if (pattern.test(target.textContent)) {
+      // Walk text nodes and replace in the first matching span
+      const walker = window.document.createTreeWalker(target, NodeFilter.SHOW_TEXT, null);
+      let node = walker.nextNode();
+      let combined = '';
+      const nodes = [];
+      while (node) {
+        nodes.push(node);
+        combined += node.nodeValue;
+        node = walker.nextNode();
+      }
+      const m = combined.match(pattern);
+      if (m) {
+        const newCombined = combined.replace(pattern, issue.suggestion);
+        // Apply: put all text in first node, clear the rest
+        if (nodes.length > 0) {
+          nodes[0].nodeValue = newCombined;
+          for (let i = 1; i < nodes.length; i += 1) {
+            nodes[i].nodeValue = '';
+          }
+          const newContent = root.innerHTML;
+          setContent(newContent);
+          // Remove issue from list
+          setCopyEditData((prev) => prev ? {
+            ...prev,
+            issues: prev.issues.filter((i) => i.id !== issue.id),
+          } : prev);
+          return true;
+        }
+      }
+    }
+
+    // Fall back to raw HTML replace if simple
+    if (html.includes(issue.original)) {
+      target.innerHTML = html.replace(issue.original, issue.suggestion);
+      setContent(root.innerHTML);
+      setCopyEditData((prev) => prev ? {
+        ...prev,
+        issues: prev.issues.filter((i) => i.id !== issue.id),
+      } : prev);
+      return true;
+    }
+    return false;
+  };
+
+  const handleAcceptIssue = (issue) => {
+    const ok = applyCopyEditFix(issue);
+    if (ok) {
+      toast.success('Fix applied');
+    } else {
+      toast.error('Could not auto-apply — edit manually', { duration: 5000 });
+    }
+  };
+
+  const handleRejectIssue = (issue) => {
+    setCopyEditData((prev) => prev ? {
+      ...prev,
+      issues: prev.issues.filter((i) => i.id !== issue.id),
+    } : prev);
+  };
+
+  const handleAcceptAll = () => {
+    if (!copyEditData?.issues?.length) return;
+    let applied = 0;
+    let skipped = 0;
+    // Apply in reverse paragraph order so earlier indices stay valid
+    const sorted = [...copyEditData.issues].sort(
+      (a, b) => b.paragraph_index - a.paragraph_index
+    );
+    sorted.forEach((issue) => {
+      if (applyCopyEditFix(issue)) applied += 1;
+      else skipped += 1;
+    });
+    toast.success(`Applied ${applied} fix${applied === 1 ? '' : 'es'}${skipped ? `, ${skipped} skipped` : ''}`);
+  };
+
+  const handleRejectAll = () => {
+    setCopyEditData((prev) => prev ? { ...prev, issues: [] } : prev);
   };
 
   const handlePublish = async (platform) => {
@@ -541,6 +752,150 @@ export default function EditorPage({ user }) {
                   </div>
                 </TabsContent>
               </Tabs>
+            </Card>
+
+            {/* Editor's Desk — Full Copy-Edit Pass */}
+            <Card data-testid="editors-desk-panel" className="p-4 bg-card/50 backdrop-blur-sm">
+              <h3 className="text-sm font-heading font-semibold mb-3 flex items-center gap-2">
+                <ScanSearch className="h-4 w-4 text-primary" />
+                Editor's Desk
+              </h3>
+              <p className="text-xs text-muted-foreground mb-3 font-body">
+                Full copy-edit pass — grammar, punctuation, run-ons, passive voice, consistency, and clarity.
+              </p>
+
+              <div className="mb-3">
+                <Label className="text-xs">Style Guide</Label>
+                <Select value={styleGuide} onValueChange={setStyleGuide}>
+                  <SelectTrigger data-testid="style-guide-select" className="rounded-sm h-9 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(styleGuides.length > 0 ? styleGuides : [
+                      { key: 'chicago', description: 'Chicago Manual of Style' },
+                      { key: 'ap', description: 'AP Stylebook' },
+                      { key: 'mla', description: 'MLA Handbook' },
+                      { key: 'house', description: 'DLP House Style' },
+                    ]).map((g) => (
+                      <SelectItem key={g.key} value={g.key} className="text-xs">
+                        {g.key.toUpperCase()} — {g.description.split('—')[0].trim()}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <Button
+                data-testid="run-copyedit-btn"
+                size="sm"
+                className="w-full rounded-sm"
+                disabled={copyEditRunning}
+                onClick={runCopyEdit}
+              >
+                {copyEditRunning ? (
+                  <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Editing…</>
+                ) : (
+                  <><FileSearch className="h-4 w-4 mr-2" /> Run Full Edit</>
+                )}
+              </Button>
+
+              {copyEditData && (
+                <div className="mt-4 space-y-3" data-testid="copyedit-results">
+                  {/* Readability dashboard */}
+                  <div className="grid grid-cols-2 gap-2 p-3 bg-accent/30 rounded-sm border">
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">FK Grade</div>
+                      <div data-testid="metric-fk-grade" className="text-base font-heading font-semibold">
+                        {copyEditData.readability.fk_grade}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Avg Sentence</div>
+                      <div data-testid="metric-avg-sentence" className="text-base font-heading font-semibold">
+                        {copyEditData.readability.avg_sentence_length} <span className="text-xs font-normal text-muted-foreground">words</span>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Passive</div>
+                      <div data-testid="metric-passive" className="text-base font-heading font-semibold">
+                        {copyEditData.readability.passive_pct}%
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Adverbs</div>
+                      <div data-testid="metric-adverbs" className="text-base font-heading font-semibold">
+                        {copyEditData.readability.adverb_pct}%
+                      </div>
+                    </div>
+                  </div>
+                  {copyEditData.readability.longest_sentence_words > 35 && (
+                    <div className="flex gap-2 p-2 rounded-sm border border-amber-200 bg-amber-50 text-xs">
+                      <AlertCircle className="h-3.5 w-3.5 text-amber-700 flex-shrink-0 mt-0.5" />
+                      <div>
+                        <div className="font-semibold text-amber-900">Longest sentence: {copyEditData.readability.longest_sentence_words} words</div>
+                        <div className="text-amber-800 line-clamp-3 mt-1">"{copyEditData.readability.longest_sentence}"</div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Issue list */}
+                  {copyEditData.issues.length > 0 && (
+                    <>
+                      <div className="flex items-center justify-between gap-2">
+                        <Select value={issueFilter} onValueChange={setIssueFilter}>
+                          <SelectTrigger data-testid="issue-filter-select" className="rounded-sm h-8 text-xs flex-1">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="all" className="text-xs">All issues ({copyEditData.issues.length})</SelectItem>
+                            <SelectItem value="must_fix" className="text-xs">Must fix</SelectItem>
+                            <SelectItem value="suggested" className="text-xs">Suggested</SelectItem>
+                            <SelectItem value="stylistic" className="text-xs">Stylistic</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="flex gap-2">
+                        <Button
+                          data-testid="accept-all-btn"
+                          size="sm"
+                          variant="outline"
+                          className="flex-1 rounded-sm h-8 text-xs"
+                          onClick={handleAcceptAll}
+                        >
+                          <Check className="h-3.5 w-3.5 mr-1" /> Accept All
+                        </Button>
+                        <Button
+                          data-testid="reject-all-btn"
+                          size="sm"
+                          variant="ghost"
+                          className="flex-1 rounded-sm h-8 text-xs"
+                          onClick={handleRejectAll}
+                        >
+                          <X className="h-3.5 w-3.5 mr-1" /> Reject All
+                        </Button>
+                      </div>
+                      <div className="space-y-2 max-h-[460px] overflow-y-auto pr-1" data-testid="issue-list">
+                        {copyEditData.issues
+                          .filter((i) => issueFilter === 'all' || i.severity === issueFilter)
+                          .map((issue) => (
+                            <CopyEditIssueCard
+                              key={issue.id}
+                              issue={issue}
+                              onAccept={() => handleAcceptIssue(issue)}
+                              onReject={() => handleRejectIssue(issue)}
+                            />
+                          ))}
+                      </div>
+                    </>
+                  )}
+                  {copyEditData.issues.length === 0 && (
+                    <div className="flex items-center gap-2 p-3 rounded-sm border border-emerald-200 bg-emerald-50 text-xs text-emerald-900">
+                      <Check className="h-4 w-4" />
+                      Manuscript is clean — no issues remain.
+                    </div>
+                  )}
+                </div>
+              )}
             </Card>
 
             {/* AI Editorial Panel */}

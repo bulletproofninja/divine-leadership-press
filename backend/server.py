@@ -27,6 +27,7 @@ from ai_editor import (
     suggest_chapter_titles,
     generate_synopsis,
 )
+from ai_copyeditor import run_copyedit_pass, STYLE_GUIDES
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -608,6 +609,47 @@ async def run_ai_edit(
         "result": result,
         "result_type": result_type,
     }
+
+
+# --- COPY-EDIT (FULL EDITORIAL PASS) ---
+
+class CopyEditRequest(BaseModel):
+    content: Optional[str] = None
+    style_guide: Optional[str] = "chicago"
+
+
+@api_router.get("/copyedit/style-guides")
+async def list_style_guides():
+    return {"style_guides": [{"key": k, "description": v} for k, v in STYLE_GUIDES.items()]}
+
+
+@api_router.post("/documents/{document_id}/copyedit")
+async def run_copyedit(
+    document_id: str,
+    payload: CopyEditRequest,
+    current_user: User = Depends(get_current_user),
+):
+    doc = await db.documents.find_one(
+        {"id": document_id, "user_id": current_user.id}, {"_id": 0}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    html_content = payload.content if payload.content is not None else (doc.get("content") or "")
+    if not html_content.strip():
+        raise HTTPException(status_code=400, detail="Document is empty — add content before running the copy editor.")
+
+    style_guide = (payload.style_guide or "chicago").lower()
+    if style_guide not in STYLE_GUIDES:
+        style_guide = "chicago"
+
+    try:
+        result = await run_copyedit_pass(html_content=html_content, style_guide=style_guide)
+    except Exception as exc:
+        logger.exception("Copy-edit pass failed")
+        raise HTTPException(status_code=502, detail=f"Copy editor service error: {exc}")
+
+    return result
 
 
 # --- EXPORT ROUTES ---
