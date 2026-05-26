@@ -5,8 +5,14 @@ import pytest
 import requests
 from motor.motor_asyncio import AsyncIOMotorClient
 import asyncio
+from dotenv import load_dotenv
 
-BASE_URL = os.environ.get('REACT_APP_BACKEND_URL') or "https://hostname-fix.preview.emergentagent.com"
+# Load frontend env so REACT_APP_BACKEND_URL is available in pytest context
+load_dotenv('/app/frontend/.env')
+load_dotenv('/app/backend/.env')
+
+BASE_URL = os.environ.get('REACT_APP_BACKEND_URL')
+assert BASE_URL, "REACT_APP_BACKEND_URL must be set in /app/frontend/.env"
 BASE_URL = BASE_URL.rstrip('/')
 API = f"{BASE_URL}/api"
 

@@ -1,0 +1,34 @@
+{
+  "summary": "Iteration 13 RETEST — Legacy referral_code backfill fix verified. All 9/9 cases in /app/backend/tests/test_referrals.py PASS, including TestLegacyBackfill::test_backfill_on_me which previously failed because Pydantic v2's default_factory on a non-Optional field silently materialised a fresh code every load. The fix (Optional[str]=None + explicit code in /register + db.users.update_one persistence in /me when missing) now makes /auth/me return a STABLE code across calls and persist it to mongo.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_referrals.py",
+    "/app/test_reports/pytest/iter13_referrals.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is still ~1600 lines — should be split into routers (auth, documents, voice, exports, referrals) per the 700-line guideline.",
+    "Convention: any Pydantic field intended to be persisted-on-first-write should be Optional[X]=None with explicit assignment at write sites — NOT default_factory on a non-Optional field. Worth documenting alongside the User model to prevent regression on future fields."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_referrals.py"
+  ],
+  "success_rate": {
+    "backend": "100%",
+    "frontend": "skipped (no FE changes since iter 12, previous run was 100%)"
+  },
+  "test_credentials": "Fresh users registered per test run, password TestPass123!. No /app/memory/test_credentials.md exists.",
+  "seed_data_creation": "Test users with TEST_ref_* prefix registered against the public API. Not cleaned up — recommend periodic cleanup of TEST_* in users collection.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backfill fix is solid; all 9 referral cases pass: unique codes, attribution (Alice/Bob/Carol total=2, recent[0]=Carol newest-first), invalid-code silent fallback, /me/referrals 401 unauth, /me includes code, legacy $unset+backfill+stable code, elevenlabs PUT/DELETE referral regression, documents create regression. Note: I had to add load_dotenv('/app/frontend/.env') at the top of test_referrals.py because REACT_APP_BACKEND_URL was not in the pytest process env (was previously silently falling back to a stale hostname which returned 4-byte 'true' bodies / 404s — that is why iter12's report still showed 8/9 pass despite the same latent issue; iter12 likely ran inside a shell where the var was already exported). Future test files should follow the same pattern.",
+  "rca of the issue": "Original bug RCA (confirmed fixed): Pydantic v2 Field(default_factory=...) on a non-Optional User.referral_code field always materialised a fresh value when loading a legacy mongo doc that lacked the field. The `if not current_user.referral_code:` guard in /auth/me was therefore vacuously False and the persistence update_one never ran. Fix verified by TestLegacyBackfill: after $unset on mongo, /auth/me returns a code, the mongo doc now contains the field, and subsequent calls return the IDENTICAL code. Secondary fix in this iteration: test file was using a stale fallback BASE_URL because os.environ.get('REACT_APP_BACKEND_URL') returned None inside pytest; added load_dotenv('/app/frontend/.env') and removed the dangerous fallback URL so misconfiguration fails fast."
+}

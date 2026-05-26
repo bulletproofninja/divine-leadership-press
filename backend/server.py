@@ -107,7 +107,7 @@ class User(BaseModel):
     name: str
     password_hash: str
     elevenlabs_api_key: Optional[str] = None
-    referral_code: str = Field(default_factory=_generate_referral_code)
+    referral_code: Optional[str] = None
     referred_by: Optional[str] = None  # the referral_code of whoever referred this user
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -346,6 +346,7 @@ async def register(user_data: UserRegister):
         email=user_data.email,
         name=user_data.name,
         password_hash=hash_password(user_data.password),
+        referral_code=_generate_referral_code(),
         referred_by=referred_by,
     )
 
