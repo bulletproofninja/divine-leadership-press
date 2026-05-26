@@ -724,7 +724,6 @@ export default function EditorPage({ user }) {
 
   useEffect(() => {
     loadCoverPreview();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [docMeta?.cover_image_ext]);
 
   const uploadCoverFile = async (file) => {

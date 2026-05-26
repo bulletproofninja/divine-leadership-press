@@ -39,12 +39,19 @@ A book publishing / writing application that allows users to upload a Word doc, 
   - **OpenAI TTS HD** (Emergent key): 9 voices, speed 0.5×–2.0×, in-browser preview, full audiobook MP3 download
   - **ElevenLabs** (per-user key in user profile): stock voice library + custom cloned Voice ID, preview, premium audiobook download
   - **Uploaded MP3**: author uploads a finished audio file (mp3/wav/m4a/ogg/flac, ≤200 MB), playable in-browser, removable
-- [x] Backend pytest suites (66 tests total, 100% pass):
+- [x] **Publication Pipeline Tracker** (6 steps: Manuscript → Metadata → Cover → PDF → ePub → Audiobook):
+  - Dashboard cards render per-book pipeline badges with ✓/pending state
+  - Editor sidebar shows live Pipeline Progress card (N/6) at the top
+  - Server-side `_compute_pipeline_status` checks content length, metadata completeness, cover/audio uploads, and export timestamps
+- [x] **Book Setup panel** in editor — Cover image upload (JPG/PNG/WebP ≤10 MB, with thumbnail preview), plus KDP metadata fields: Author, Subtitle, Description, ISBN, Language, Category, Keywords, Publisher
+- [x] Dashboard cover thumbnails (replaces generic icon when a cover is uploaded)
+- [x] Backend pytest suites (83 tests, 100% pass):
   - `/app/backend/tests/test_upload_export.py` (14)
   - `/app/backend/tests/test_ai_editorial.py` (8)
   - `/app/backend/tests/test_copyedit.py` (11)
   - `/app/backend/tests/test_audio_studio.py` (11)
   - `/app/backend/tests/test_elevenlabs_upload.py` (22)
+  - `/app/backend/tests/test_pipeline_cover.py` (17)
 
 ## Architecture
 ```
