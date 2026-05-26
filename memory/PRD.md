@@ -62,6 +62,12 @@ A book publishing / writing application that allows users to upload a Word doc, 
   - `GET /api/auth/me/referrals` returns code, total invited count, and recent invitee names (no emails leaked)
   - "Share & Refer" card in `/help` footer (authenticated users only) with copy-link, native share, and a recent-invitees list
   - Legacy backfill: any pre-existing user without a code gets one on next `/auth/me` call (Pydantic Optional + explicit set fix)
+- [x] **Affiliate Leaderboard + Badges + Admin Foundation**:
+  - Public **Top Inviters** leaderboard on `/help` (top 10 by referral count, ranked with amber/silver/bronze rank badges)
+  - 4-tier badge system on each user: Ambassador (1+), Author Advocate (5+), Patron of Letters (10+), Founding Editor (25+) — displayed in the Share & Refer card
+  - Super-admin role on User model + `/api/admin/affiliate/settings` (super-admin write-only) endpoint to configure: `reward_type` (credits/cash/perks/none), `commission_percent`, `minimum_payout`, `qualifying_event` (signup/first_paid_subscription/first_book_published), `reward_value`, `currency`, `notes`
+  - Public `/api/affiliate/settings` so authors see program rules in their Share & Refer card
+  - Default: tracking-only mode (no payout) until owner sets parameters
 - [x] Backend pytest suites (113 tests, 100% pass):
   - `/app/backend/tests/test_upload_export.py` (14)
   - `/app/backend/tests/test_ai_editorial.py` (8)
