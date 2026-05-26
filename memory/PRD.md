@@ -47,7 +47,9 @@ A book publishing / writing application that allows users to upload a Word doc, 
 - [x] Dashboard cover thumbnails (replaces generic icon when a cover is uploaded)
 - [x] **Cover → PDF converter** (reportlab + PIL): one-click "Download Cover as PDF" from Book Setup, sized to selected KDP trim; plus a generic `POST /api/tools/image-to-pdf` endpoint for any JPG/PNG/WebP
 - [x] **Voice Dictation** (OpenAI Whisper via Emergent key): Dictate button in editor toolbar; MediaRecorder captures mic, sends to `/api/transcribe`, Whisper returns punctuated text, inserted at the Quill cursor position
-- [x] Backend pytest suites (100 tests, 100% pass):
+- [x] **Continuous Dictation Mode**: Switch toggle next to Dictate button — records in 30-second segments, transcribing each as it completes; pulsing red recording indicator inside the Dictation History panel
+- [x] **Dictation History panel** in editor sidebar: shows each transcribed chunk (timestamp + text) with per-chunk Undo (search-and-remove from manuscript) and Clear All buttons; renders only when history > 0
+- [x] Backend pytest suites (100 tests + iter-9 48-test regression run, 100% pass cumulative):
   - `/app/backend/tests/test_upload_export.py` (14)
   - `/app/backend/tests/test_ai_editorial.py` (8)
   - `/app/backend/tests/test_copyedit.py` (11)
