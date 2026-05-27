@@ -15,6 +15,30 @@ A book publishing / writing application that allows users to upload a Word doc, 
 - Export to real PDF at **all standard KDP trim sizes** + ePub
 - Navy-blue / cream classic publishing aesthetic
 
+## Implemented (as of 2026-02-27)
+- [x] **Stripe Subscription Billing** (via emergentintegrations Stripe Checkout wrapper with STRIPE_API_KEY=sk_test_emergent):
+  - 2 plans defined server-side: **Author Pro** ($19/mo) and **Estate** ($49/mo); each payment grants 30 days of access (extends `pro_until` on the user's `subscriptions` doc).
+  - `POST /api/billing/checkout` creates a fixed-amount Stripe Checkout session and inserts a `payment_transactions` row.
+  - `GET /api/billing/checkout/status/{session_id}` polls Stripe and idempotently credits the subscription + accrues affiliate commission.
+  - `POST /api/webhook/stripe` receives webhook events (signature-verified by the SDK) and credits the same way (defense-in-depth on user_id — trusts the server-side txn over Stripe metadata).
+  - `GET /api/billing/plans` (public) and `GET /api/billing/me` (auth) expose the catalogue and the user's current subscription state.
+- [x] **Affiliate commissions ledger** (`commissions` collection):
+  - On every paid checkout, if the referee was referred by someone, accrue a commission per `affiliate_settings`: signup% on first payment; mrr% on every subsequent payment within `active_days_required` (default 60) of signup.
+  - `GET /api/billing/commissions` — current user's earnings ledger + pending/paid totals.
+  - `GET /api/admin/commissions` — super-admin only; lists all commissions + pending balances per affiliate.
+  - `POST /api/admin/commissions/mark-paid` — super-admin only; marks N rows paid with payout_method (manual/stripe_connect/paypal/wire) + reference.
+- [x] **Frontend billing UX**:
+  - `/billing` plan picker page with Stripe redirect on subscribe.
+  - `/billing/success` polls the session status (max 10 attempts, 2s interval) until paid/expired.
+  - `/admin/commissions` payout dashboard with select-rows-and-mark-paid flow.
+  - Earnings card surfaced in `/help` Share & Refer footer (pending + paid + ledger).
+  - Dashboard header: new "Plans" link for everyone; "Admin" + "Payouts" for owner.
+- [x] **Per-chapter audiobook export**:
+  - `GET /api/documents/{id}/audiobook/chapters/preview` — H1/H2-split chapter list with word counts.
+  - `POST /api/documents/{id}/audiobook/chapters` — returns ZIP of one MP3 per chapter + tracklist.txt (uses OpenAI TTS via existing pipeline).
+  - "Per-chapter audiobook" panel in the Editor's Audio Studio with Detect / Export ZIP buttons + collapsible chapter preview list.
+- [x] Backend pytest: +34 tests in `/app/backend/tests/test_billing.py` (covers plans, checkout creation, status polling, idempotency, commission accrual, admin payouts, chapter-export validation paths). Total backend tests now: 147 (113 existing + 34 new).
+
 ## Implemented (as of 2026-02-26)
 - [x] Auth (JWT) + user dashboard + document CRUD
 - [x] Landing page, dashboard, editor (Quill) with version & comment panels
@@ -114,10 +138,15 @@ A book publishing / writing application that allows users to upload a Word doc, 
 - `POST /api/integrations/{kdp|lulu}` (preparation-only, not real API hooks)
 
 ## Backlog (P1 / P2)
-- P1: Refactor EditorPage.js into smaller components (still ~540 lines)
-- P1: Refactor server.py into routers/ (auth, documents, exports)
+- P1: Refactor `server.py` (now ~2200 lines) into routers/ (auth, documents, billing, audio, admin)
+- P1: Refactor EditorPage.js into smaller components (still ~2500 lines)
+- P1: Real Stripe **Connect (Express)** onboarding so super-admin can auto-pay affiliates instead of manual mark-paid — requires owner's live Stripe account.
+- P1: Stripe **Subscriptions** (recurring price) instead of one-time monthly payments, so renewals are auto-charged.
+- P1: Rate-limit `/billing/checkout` to ~5/min per user.
 - P1: Track-changes backend (diff/redline persistence)
-- P2: Cover image upload for books
+- P2: `commissions_dlq` collection so a Mongo blip during webhook can't lose a commission row.
+- P2: Webhook payload caching — reuse `event.session_id` data to avoid an extra `get_checkout_status` round-trip.
+- P2: Background-queue the per-chapter audiobook export for books >5 chapters (currently sequential within the request).
 - P2: Apply selected style template to PDF/ePub output (currently uses serif default)
 - P2: Extend Format Preview text mapping to cover all 12 KDP trim keys
 - P2: Replace `jwt.JWTError` with `jwt.PyJWTError` (PyJWT 2.x hardening)

@@ -720,7 +720,8 @@ async def _credit_successful_payment(
         return {"processed": False, "payment_status": payment_status}
 
     plan_id = (metadata or {}).get("plan_id") or txn.get("plan_id")
-    user_id = (metadata or {}).get("user_id") or txn.get("user_id")
+    # Defense-in-depth: trust the txn we created server-side over Stripe metadata
+    user_id = txn.get("user_id") or (metadata or {}).get("user_id")
     plan = get_plan(plan_id)
     if not plan or not user_id:
         await db.payment_transactions.update_one(
@@ -851,7 +852,7 @@ async def stripe_webhook(http_request: Request):
         event = await client.handle_webhook(body, signature)
     except Exception as exc:
         logger.exception("Stripe webhook handling failed")
-        raise HTTPException(status_code=400, detail=f"Webhook error: {exc}")
+        raise HTTPException(status_code=400, detail="Invalid webhook payload or signature.")
 
     # Only credit on completion. Other events update status only.
     if event.event_type in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
