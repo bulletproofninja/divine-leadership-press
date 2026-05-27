@@ -186,6 +186,7 @@ export default function HelpPage() {
   const [leaderboard, setLeaderboard] = useState([]);
   const [myBadge, setMyBadge] = useState(null);
   const [programSettings, setProgramSettings] = useState(null);
+  const [earnings, setEarnings] = useState(null);
   const isAuthed = !!localStorage.getItem('token');
 
   useEffect(() => {
@@ -202,6 +203,9 @@ export default function HelpPage() {
     axios.get(`${API}/auth/me/badge`, getAuthHeaders())
       .then((r) => setMyBadge(r.data))
       .catch(() => setMyBadge(null));
+    axios.get(`${API}/billing/commissions`, getAuthHeaders())
+      .then((r) => setEarnings(r.data))
+      .catch(() => setEarnings(null));
   }, [isAuthed]);
 
   const referralUrl = referral
@@ -517,6 +521,105 @@ export default function HelpPage() {
                     </ul>
                   </div>
                 )}
+              </Card>
+            </motion.section>
+          )}
+
+          {/* Affiliate earnings (private) */}
+          {isAuthed && earnings && earnings.totals && earnings.totals.count > 0 && (
+            <motion.section
+              initial={{ opacity: 0, y: 10 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true, margin: '-100px' }}
+              transition={{ duration: 0.4 }}
+              data-testid="earnings-card"
+              className="scroll-mt-28"
+              id="earnings"
+            >
+              <div className="flex items-center gap-3 mb-2">
+                <div className="p-2 rounded-sm bg-emerald-50 border border-emerald-200 text-emerald-700">
+                  <Award className="h-5 w-5" />
+                </div>
+                <span className="text-[10px] uppercase tracking-[0.22em] font-mono text-muted-foreground">
+                  Your earnings
+                </span>
+              </div>
+              <h2 className="text-2xl sm:text-3xl font-heading font-semibold mb-1">
+                Affiliate commissions ledger
+              </h2>
+              <p className="text-sm text-muted-foreground italic font-body mb-5">
+                Every paid subscription from an author you invited.
+              </p>
+              <Card className="p-6 bg-card/60 backdrop-blur-sm border-l-4 border-l-emerald-500 rounded-sm">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-5">
+                  <div className="p-3 rounded-sm border bg-accent/30 text-center">
+                    <div className="text-[10px] uppercase tracking-wider font-mono text-muted-foreground">
+                      Pending payout
+                    </div>
+                    <div
+                      data-testid="earnings-pending"
+                      className="text-2xl font-heading font-semibold text-amber-700 mt-1"
+                    >
+                      ${earnings.totals.pending.toFixed(2)}
+                    </div>
+                  </div>
+                  <div className="p-3 rounded-sm border bg-accent/30 text-center">
+                    <div className="text-[10px] uppercase tracking-wider font-mono text-muted-foreground">
+                      Lifetime paid
+                    </div>
+                    <div
+                      data-testid="earnings-paid"
+                      className="text-2xl font-heading font-semibold text-emerald-700 mt-1"
+                    >
+                      ${earnings.totals.paid.toFixed(2)}
+                    </div>
+                  </div>
+                  <div className="p-3 rounded-sm border bg-accent/30 text-center">
+                    <div className="text-[10px] uppercase tracking-wider font-mono text-muted-foreground">
+                      Total rows
+                    </div>
+                    <div
+                      data-testid="earnings-count"
+                      className="text-2xl font-heading font-semibold mt-1"
+                    >
+                      {earnings.totals.count}
+                    </div>
+                  </div>
+                </div>
+
+                <div data-testid="earnings-list" className="border-t pt-3">
+                  <div className="text-[10px] uppercase tracking-wider font-mono text-muted-foreground mb-2">
+                    Recent commissions
+                  </div>
+                  <ul className="space-y-1.5 text-xs font-body">
+                    {earnings.commissions.slice(0, 6).map((c) => (
+                      <li
+                        key={c.id}
+                        data-testid={`earnings-row-${c.id}`}
+                        className="flex items-center justify-between py-1 border-b last:border-0"
+                      >
+                        <span className="flex items-center gap-2 min-w-0">
+                          <span className="text-muted-foreground font-mono text-[10px]">
+                            {c.created_at ? new Date(c.created_at).toLocaleDateString() : ''}
+                          </span>
+                          <span className="uppercase tracking-wider text-[10px] font-mono px-1.5 py-0.5 bg-muted rounded-sm">
+                            {c.kind} · {c.percent}%
+                          </span>
+                        </span>
+                        <span className="flex items-center gap-2 flex-shrink-0">
+                          <span className="font-mono font-semibold">
+                            ${Number(c.amount).toFixed(2)}
+                          </span>
+                          <span className={`text-[10px] uppercase ${
+                            c.status === 'paid' ? 'text-emerald-700' : 'text-amber-700'
+                          }`}>
+                            {c.status}
+                          </span>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               </Card>
             </motion.section>
           )}

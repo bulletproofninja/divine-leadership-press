@@ -7,6 +7,9 @@ import Dashboard from './pages/Dashboard';
 import EditorPage from './pages/EditorPage';
 import HelpPage from './pages/HelpPage';
 import AdminAffiliatePage from './pages/AdminAffiliatePage';
+import BillingPage from './pages/BillingPage';
+import BillingSuccess from './pages/BillingSuccess';
+import AdminCommissionsPage from './pages/AdminCommissionsPage';
 import { Toaster } from './components/ui/sonner';
 
 function App() {
@@ -80,10 +83,40 @@ function App() {
           />
           <Route path="/help" element={<HelpPage />} />
           <Route
+            path="/billing"
+            element={
+              user ? (
+                <BillingPage user={user} />
+              ) : (
+                <Navigate to="/" replace />
+              )
+            }
+          />
+          <Route
+            path="/billing/success"
+            element={
+              user ? (
+                <BillingSuccess />
+              ) : (
+                <Navigate to="/" replace />
+              )
+            }
+          />
+          <Route
             path="/admin/affiliate"
             element={
               user ? (
                 <AdminAffiliatePage user={user} />
+              ) : (
+                <Navigate to="/" replace />
+              )
+            }
+          />
+          <Route
+            path="/admin/commissions"
+            element={
+              user ? (
+                <AdminCommissionsPage user={user} />
               ) : (
                 <Navigate to="/" replace />
               )

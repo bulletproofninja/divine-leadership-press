@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Plus, FileText, Upload, LogOut, Search, Calendar, File, Trash2, Edit, ImageIcon, BookOpen, FileType, Headphones, HelpCircle, Shield } from 'lucide-react';
+import { Plus, FileText, Upload, LogOut, Search, Calendar, File, Trash2, Edit, ImageIcon, BookOpen, FileType, Headphones, HelpCircle, Shield, CreditCard, DollarSign } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Card } from '../components/ui/card';
@@ -231,6 +231,17 @@ export default function Dashboard({ user, onLogout }) {
               <HelpCircle className="h-4 w-4 sm:mr-1.5" />
               <span className="hidden sm:inline">Help</span>
             </Button>
+            <Button
+              data-testid="billing-link-dashboard"
+              variant="ghost"
+              size="sm"
+              onClick={() => navigate('/billing')}
+              className="rounded-sm"
+              title="Plans & Billing"
+            >
+              <CreditCard className="h-4 w-4 sm:mr-1.5" />
+              <span className="hidden sm:inline">Plans</span>
+            </Button>
             {user?.is_super_admin && (
               <Button
                 data-testid="admin-link-dashboard"
@@ -242,6 +253,19 @@ export default function Dashboard({ user, onLogout }) {
               >
                 <Shield className="h-4 w-4 sm:mr-1.5" />
                 <span className="hidden sm:inline">Admin</span>
+              </Button>
+            )}
+            {user?.is_super_admin && (
+              <Button
+                data-testid="commissions-link-dashboard"
+                variant="ghost"
+                size="sm"
+                onClick={() => navigate('/admin/commissions')}
+                className="rounded-sm text-primary"
+                title="Owner — Commissions & Payouts"
+              >
+                <DollarSign className="h-4 w-4 sm:mr-1.5" />
+                <span className="hidden sm:inline">Payouts</span>
               </Button>
             )}
             <Button data-testid="logout-btn" variant="ghost" size="sm" onClick={onLogout} className="rounded-sm">

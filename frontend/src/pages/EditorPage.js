@@ -209,6 +209,9 @@ export default function EditorPage({ user }) {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewAudioUrl, setPreviewAudioUrl] = useState(null);
   const [audiobookLoading, setAudiobookLoading] = useState(false);
+  const [chapterAudiobookLoading, setChapterAudiobookLoading] = useState(false);
+  const [chapterPreview, setChapterPreview] = useState(null);
+  const [chapterPreviewLoading, setChapterPreviewLoading] = useState(false);
   // ElevenLabs state
   const [hasElevenKey, setHasElevenKey] = useState(false);
   const [elevenKeyInput, setElevenKeyInput] = useState('');
@@ -775,6 +778,48 @@ export default function EditorPage({ user }) {
       toast.error(detail, { duration: 8000 });
     } finally {
       setAudiobookLoading(false);
+    }
+  };
+
+  const fetchChapterPreview = async () => {
+    setChapterPreviewLoading(true);
+    try {
+      const r = await axios.get(
+        `${API}/documents/${documentId}/audiobook/chapters/preview`,
+        getAuthHeaders()
+      );
+      setChapterPreview(r.data);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Could not detect chapters');
+    } finally {
+      setChapterPreviewLoading(false);
+    }
+  };
+
+  const downloadChapterAudiobook = async () => {
+    setChapterAudiobookLoading(true);
+    try {
+      const response = await axios.post(
+        `${API}/documents/${documentId}/audiobook/chapters?voice=${encodeURIComponent(ttsVoice)}&speed=${ttsSpeed}`,
+        {},
+        { ...getAuthHeaders(), responseType: 'blob', timeout: 1200000 }
+      );
+      const blob = new Blob([response.data], { type: 'application/zip' });
+      const url = window.URL.createObjectURL(blob);
+      const a = window.document.createElement('a');
+      a.href = url;
+      const safe = (title || 'audiobook').replace(/[^A-Za-z0-9._-]+/g, '_');
+      a.download = `${safe}_chapters.zip`;
+      window.document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      toast.success('Per-chapter audiobook downloaded');
+    } catch (error) {
+      const detail = error.response?.data?.detail || 'Per-chapter export failed';
+      toast.error(detail, { duration: 8000 });
+    } finally {
+      setChapterAudiobookLoading(false);
     }
   };
 
@@ -2209,6 +2254,76 @@ export default function EditorPage({ user }) {
                   <p className="text-[10px] text-muted-foreground text-center">
                     Full manuscripts up to ~17,000 words. Larger books — generate per chapter.
                   </p>
+
+                  {/* Per-chapter export */}
+                  <div className="mt-3 pt-3 border-t space-y-2">
+                    <div className="flex items-center gap-2">
+                      <FileDown className="h-3.5 w-3.5 text-primary" />
+                      <span className="text-xs font-semibold">Per-chapter audiobook</span>
+                    </div>
+                    <p className="text-[10px] text-muted-foreground">
+                      Split at H1/H2 headings and bundle one MP3 per chapter (ZIP). Perfect for
+                      KDP Audible uploads.
+                    </p>
+                    <div className="flex gap-2">
+                      <Button
+                        data-testid="chapter-preview-btn"
+                        size="sm"
+                        variant="outline"
+                        className="flex-1 rounded-sm"
+                        disabled={chapterPreviewLoading || chapterAudiobookLoading}
+                        onClick={fetchChapterPreview}
+                      >
+                        {chapterPreviewLoading ? (
+                          <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                        ) : (
+                          <ScanSearch className="h-3 w-3 mr-1" />
+                        )}
+                        Detect chapters
+                      </Button>
+                      <Button
+                        data-testid="chapter-audiobook-btn"
+                        size="sm"
+                        className="flex-1 rounded-sm"
+                        disabled={chapterAudiobookLoading || audiobookLoading || previewLoading}
+                        onClick={downloadChapterAudiobook}
+                      >
+                        {chapterAudiobookLoading ? (
+                          <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                        ) : (
+                          <Download className="h-3 w-3 mr-1" />
+                        )}
+                        Export ZIP
+                      </Button>
+                    </div>
+                    {chapterPreview && chapterPreview.chapters && (
+                      <div
+                        data-testid="chapter-preview-list"
+                        className="rounded-sm border bg-muted/30 max-h-40 overflow-y-auto"
+                      >
+                        <div className="px-2 py-1.5 text-[10px] uppercase tracking-wider font-mono text-muted-foreground border-b bg-muted/40">
+                          {chapterPreview.total} chapter{chapterPreview.total === 1 ? '' : 's'} detected
+                        </div>
+                        <ul className="divide-y">
+                          {chapterPreview.chapters.map((ch) => (
+                            <li
+                              key={ch.index}
+                              data-testid={`chapter-row-${ch.index}`}
+                              className="px-2 py-1 flex items-center justify-between text-[11px]"
+                            >
+                              <span className="font-mono text-muted-foreground mr-2 flex-shrink-0">
+                                {String(ch.index).padStart(2, '0')}
+                              </span>
+                              <span className="flex-1 truncate">{ch.title}</span>
+                              <span className="font-mono text-[10px] text-muted-foreground flex-shrink-0 ml-2">
+                                {ch.word_count.toLocaleString()}w
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
                 </TabsContent>
 
                 {/* --- ElevenLabs tab --- */}

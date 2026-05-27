@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Depends, Header
+from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Depends, Header, Request
 from fastapi.responses import Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -67,6 +67,24 @@ from voice_memos import (
 )
 from transcription import transcribe_audio
 from image_to_pdf import image_to_pdf
+from chapter_audiobook import export_chapters_zip, split_into_chapters
+from billing import (
+    PLANS,
+    get_plan,
+    list_plans_public,
+    new_transaction_record,
+    new_subscription_record,
+    extend_subscription,
+    is_subscription_active,
+    calculate_commission,
+    new_commission_record,
+)
+from emergentintegrations.payments.stripe.checkout import (
+    StripeCheckout,
+    CheckoutSessionRequest,
+    CheckoutSessionResponse,
+    CheckoutStatusResponse,
+)
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -579,6 +597,377 @@ async def my_affiliate_badge(current_user: User = Depends(get_current_user)):
     return {"badge": _badge_tier(count), "count": count}
 
 
+# --- BILLING & STRIPE CHECKOUT ---
+
+class BillingCheckoutRequest(BaseModel):
+    plan_id: str
+    origin_url: str  # frontend's window.location.origin
+
+
+def _stripe_client(http_request) -> StripeCheckout:
+    api_key = os.environ.get("STRIPE_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="Stripe is not configured on the server.")
+    host_url = str(http_request.base_url).rstrip("/")
+    webhook_url = f"{host_url}/api/webhook/stripe"
+    return StripeCheckout(api_key=api_key, webhook_url=webhook_url)
+
+
+@api_router.get("/billing/plans")
+async def billing_plans():
+    """Public plan catalogue. Prices/IDs are server-defined; never trust the client."""
+    return {"plans": list_plans_public()}
+
+
+@api_router.get("/billing/me")
+async def billing_me(current_user: User = Depends(get_current_user)):
+    """Current subscription status for the logged-in user."""
+    sub = await db.subscriptions.find_one({"user_id": current_user.id}, {"_id": 0})
+    plan = get_plan(sub["plan_id"]) if sub and sub.get("plan_id") else None
+    return {
+        "active": is_subscription_active(sub),
+        "plan_id": sub.get("plan_id") if sub else None,
+        "plan_name": plan["name"] if plan else None,
+        "pro_until": sub.get("pro_until") if sub else None,
+        "payments_count": sub.get("payments_count", 0) if sub else 0,
+    }
+
+
+@api_router.post("/billing/checkout")
+async def billing_checkout(
+    payload: BillingCheckoutRequest,
+    http_request: Request,
+    current_user: User = Depends(get_current_user),
+):
+    """Create a Stripe Checkout session for a fixed plan."""
+    plan = get_plan(payload.plan_id)
+    if not plan:
+        raise HTTPException(status_code=400, detail="Unknown plan.")
+    origin = (payload.origin_url or "").strip().rstrip("/")
+    if not origin.startswith("http"):
+        raise HTTPException(status_code=400, detail="origin_url must be an absolute URL.")
+
+    success_url = f"{origin}/billing/success?session_id={{CHECKOUT_SESSION_ID}}"
+    cancel_url = f"{origin}/billing"
+
+    client = _stripe_client(http_request)
+    req = CheckoutSessionRequest(
+        amount=float(plan["amount"]),
+        currency=plan["currency"],
+        success_url=success_url,
+        cancel_url=cancel_url,
+        metadata={
+            "user_id": current_user.id,
+            "email": current_user.email,
+            "plan_id": plan["id"],
+            "source": "dlp_subscription",
+        },
+    )
+    try:
+        session: CheckoutSessionResponse = await client.create_checkout_session(req)
+    except Exception as exc:
+        logger.exception("Stripe checkout creation failed")
+        raise HTTPException(status_code=502, detail=f"Stripe error: {exc}")
+
+    record = new_transaction_record(
+        session_id=session.session_id,
+        user_id=current_user.id,
+        email=current_user.email,
+        plan_id=plan["id"],
+        amount=float(plan["amount"]),
+        currency=plan["currency"],
+        metadata={"source": "dlp_subscription"},
+    )
+    await db.payment_transactions.insert_one(record)
+
+    return {"session_id": session.session_id, "url": session.url}
+
+
+async def _credit_successful_payment(
+    *,
+    session_id: str,
+    payment_status: str,
+    session_status: str,
+    amount_total_cents: int,
+    currency: str,
+    metadata: dict,
+) -> dict:
+    """Idempotently process a successful Stripe Checkout session:
+    - Update the payment_transactions row.
+    - Extend / create the user's subscription.
+    - Accrue affiliate commission if applicable.
+    Returns a small summary dict for clients/webhooks."""
+    txn = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
+    if not txn:
+        return {"processed": False, "reason": "transaction_not_found"}
+
+    update_fields = {
+        "payment_status": payment_status,
+        "status": session_status,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    if txn.get("processed"):
+        await db.payment_transactions.update_one(
+            {"session_id": session_id}, {"$set": update_fields}
+        )
+        return {"processed": True, "duplicate": True, "plan_id": txn.get("plan_id")}
+
+    if payment_status != "paid":
+        await db.payment_transactions.update_one(
+            {"session_id": session_id}, {"$set": update_fields}
+        )
+        return {"processed": False, "payment_status": payment_status}
+
+    plan_id = (metadata or {}).get("plan_id") or txn.get("plan_id")
+    user_id = (metadata or {}).get("user_id") or txn.get("user_id")
+    plan = get_plan(plan_id)
+    if not plan or not user_id:
+        await db.payment_transactions.update_one(
+            {"session_id": session_id}, {"$set": update_fields}
+        )
+        return {"processed": False, "reason": "missing_plan_or_user"}
+
+    # Subscription credit
+    existing_sub = await db.subscriptions.find_one({"user_id": user_id}, {"_id": 0})
+    is_first_payment = existing_sub is None
+    if is_first_payment:
+        sub_doc = new_subscription_record(
+            user_id=user_id, plan_id=plan_id, period_days=int(plan["period_days"])
+        )
+        await db.subscriptions.insert_one(sub_doc)
+    else:
+        ext = extend_subscription(
+            existing_sub, plan_id=plan_id, period_days=int(plan["period_days"])
+        )
+        await db.subscriptions.update_one({"user_id": user_id}, {"$set": ext})
+
+    # Mark txn processed FIRST to lock idempotency
+    update_fields["processed"] = True
+    await db.payment_transactions.update_one(
+        {"session_id": session_id}, {"$set": update_fields}
+    )
+
+    # Affiliate commission (best-effort; failures must not break the payment)
+    commission_amount = None
+    try:
+        user_doc = await db.users.find_one({"id": user_id}, {"_id": 0})
+        if user_doc and user_doc.get("referred_by"):
+            referrer = await db.users.find_one(
+                {"referral_code": user_doc["referred_by"]}, {"_id": 0}
+            )
+            if referrer:
+                settings = await _load_affiliate_settings()
+                signup_at = user_doc.get("created_at")
+                if isinstance(signup_at, str):
+                    try:
+                        signup_at = datetime.fromisoformat(signup_at)
+                    except ValueError:
+                        signup_at = datetime.now(timezone.utc)
+                elif not isinstance(signup_at, datetime):
+                    signup_at = datetime.now(timezone.utc)
+                if signup_at.tzinfo is None:
+                    signup_at = signup_at.replace(tzinfo=timezone.utc)
+
+                paid_amount = float(amount_total_cents) / 100.0 if amount_total_cents else float(plan["amount"])
+                comm = calculate_commission(
+                    amount=paid_amount,
+                    is_first_payment=is_first_payment,
+                    settings=settings,
+                    referee_signup_at=signup_at,
+                )
+                if comm:
+                    rec = new_commission_record(
+                        referrer_user_id=referrer["id"],
+                        referee_user_id=user_id,
+                        referee_email=user_doc.get("email", ""),
+                        transaction_id=txn["id"],
+                        session_id=session_id,
+                        plan_id=plan_id,
+                        kind=comm["kind"],
+                        percent=comm["percent"],
+                        amount=comm["amount"],
+                        currency=comm["currency"],
+                    )
+                    await db.commissions.insert_one(rec)
+                    commission_amount = comm["amount"]
+    except Exception:
+        logger.exception("Commission accrual failed (non-fatal)")
+
+    return {
+        "processed": True,
+        "plan_id": plan_id,
+        "user_id": user_id,
+        "commission_amount": commission_amount,
+    }
+
+
+@api_router.get("/billing/checkout/status/{session_id}")
+async def billing_checkout_status(
+    session_id: str,
+    http_request: Request,
+    current_user: User = Depends(get_current_user),
+):
+    """Poll Stripe for the session status and credit the user idempotently."""
+    txn = await db.payment_transactions.find_one(
+        {"session_id": session_id, "user_id": current_user.id}, {"_id": 0}
+    )
+    if not txn:
+        raise HTTPException(status_code=404, detail="Checkout session not found.")
+
+    client = _stripe_client(http_request)
+    try:
+        status: CheckoutStatusResponse = await client.get_checkout_status(session_id)
+    except Exception as exc:
+        logger.exception("Stripe status fetch failed")
+        raise HTTPException(status_code=502, detail=f"Stripe error: {exc}")
+
+    summary = await _credit_successful_payment(
+        session_id=session_id,
+        payment_status=status.payment_status,
+        session_status=status.status,
+        amount_total_cents=int(status.amount_total or 0),
+        currency=(status.currency or "usd"),
+        metadata=dict(status.metadata or {}),
+    )
+    return {
+        "session_id": session_id,
+        "status": status.status,
+        "payment_status": status.payment_status,
+        "amount_total": status.amount_total,
+        "currency": status.currency,
+        "plan_id": summary.get("plan_id"),
+        "processed": summary.get("processed", False),
+    }
+
+
+@api_router.post("/webhook/stripe")
+async def stripe_webhook(http_request: Request):
+    """Stripe webhook receiver — credits payments idempotently."""
+    body = await http_request.body()
+    signature = http_request.headers.get("Stripe-Signature", "")
+    client = _stripe_client(http_request)
+    try:
+        event = await client.handle_webhook(body, signature)
+    except Exception as exc:
+        logger.exception("Stripe webhook handling failed")
+        raise HTTPException(status_code=400, detail=f"Webhook error: {exc}")
+
+    # Only credit on completion. Other events update status only.
+    if event.event_type in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
+        # Fetch authoritative session to get amount_total
+        try:
+            status_resp = await client.get_checkout_status(event.session_id)
+            await _credit_successful_payment(
+                session_id=event.session_id,
+                payment_status=status_resp.payment_status,
+                session_status=status_resp.status,
+                amount_total_cents=int(status_resp.amount_total or 0),
+                currency=(status_resp.currency or "usd"),
+                metadata=dict(status_resp.metadata or event.metadata or {}),
+            )
+        except Exception:
+            logger.exception("Webhook follow-up status fetch failed")
+    return {"received": True, "event_type": event.event_type}
+
+
+# --- COMMISSIONS (affiliate earnings) ---
+
+@api_router.get("/billing/commissions")
+async def my_commissions(current_user: User = Depends(get_current_user)):
+    """List commissions earned by the current user (as a referrer)."""
+    cursor = db.commissions.find(
+        {"referrer_user_id": current_user.id}, {"_id": 0}
+    ).sort("created_at", -1)
+    rows = await cursor.to_list(500)
+    pending_total = round(sum(r["amount"] for r in rows if r.get("status") == "pending"), 2)
+    paid_total = round(sum(r["amount"] for r in rows if r.get("status") == "paid"), 2)
+    return {
+        "commissions": rows,
+        "totals": {
+            "pending": pending_total,
+            "paid": paid_total,
+            "count": len(rows),
+        },
+    }
+
+
+@api_router.get("/admin/commissions")
+async def admin_list_commissions(
+    status: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+):
+    _require_super_admin(current_user)
+    query: dict = {}
+    if status:
+        query["status"] = status
+    cursor = db.commissions.find(query, {"_id": 0}).sort("created_at", -1)
+    rows = await cursor.to_list(2000)
+
+    # Hydrate referrer names for the admin view
+    user_ids = list({r["referrer_user_id"] for r in rows})
+    user_map: dict = {}
+    if user_ids:
+        async for u in db.users.find(
+            {"id": {"$in": user_ids}}, {"_id": 0, "id": 1, "name": 1, "email": 1}
+        ):
+            user_map[u["id"]] = u
+    for r in rows:
+        ref = user_map.get(r["referrer_user_id"], {})
+        r["referrer_name"] = ref.get("name")
+        r["referrer_email"] = ref.get("email")
+
+    totals_by_user: dict = {}
+    for r in rows:
+        if r.get("status") != "pending":
+            continue
+        key = r["referrer_user_id"]
+        totals_by_user.setdefault(key, {
+            "user_id": key,
+            "name": r.get("referrer_name"),
+            "email": r.get("referrer_email"),
+            "pending_total": 0.0,
+            "count": 0,
+        })
+        totals_by_user[key]["pending_total"] = round(
+            totals_by_user[key]["pending_total"] + float(r["amount"]), 2
+        )
+        totals_by_user[key]["count"] += 1
+    return {
+        "commissions": rows,
+        "pending_by_user": list(totals_by_user.values()),
+    }
+
+
+class PayoutMarkPaidRequest(BaseModel):
+    commission_ids: List[str]
+    payout_method: Optional[str] = "manual"  # manual | stripe_connect | wire | paypal
+    payout_reference: Optional[str] = None   # e.g. Stripe transfer id, check number
+
+
+@api_router.post("/admin/commissions/mark-paid")
+async def admin_mark_commissions_paid(
+    payload: PayoutMarkPaidRequest,
+    current_user: User = Depends(get_current_user),
+):
+    _require_super_admin(current_user)
+    if not payload.commission_ids:
+        raise HTTPException(status_code=400, detail="commission_ids cannot be empty.")
+    result = await db.commissions.update_many(
+        {"id": {"$in": payload.commission_ids}, "status": "pending"},
+        {
+            "$set": {
+                "status": "paid",
+                "paid_at": datetime.now(timezone.utc).isoformat(),
+                "payout_method": payload.payout_method,
+                "payout_reference": payload.payout_reference,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        },
+    )
+    return {"marked_paid": result.modified_count}
+
+
 class ElevenLabsKeyRequest(BaseModel):
     api_key: str
 
@@ -1037,6 +1426,74 @@ async def generate_audiobook(
             "Content-Disposition": f'attachment; filename="{safe_name}_audiobook.mp3"',
             "X-Audiobook-Voice": voice,
             "X-Audiobook-Speed": str(speed),
+        },
+    )
+
+
+@api_router.get("/documents/{document_id}/audiobook/chapters/preview")
+async def preview_audiobook_chapters(
+    document_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    """Return the detected chapter list so the UI can preview before exporting."""
+    doc = await db.documents.find_one(
+        {"id": document_id, "user_id": current_user.id}, {"_id": 0}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    chapters = split_into_chapters(doc.get("content") or "")
+    plain_chapters = []
+    for idx, (title, html) in enumerate(chapters, start=1):
+        from bs4 import BeautifulSoup as _BS
+        text = _BS(html, "html.parser").get_text(separator=" ", strip=True)
+        plain_chapters.append({
+            "index": idx,
+            "title": title,
+            "char_count": len(text),
+            "word_count": len(text.split()) if text else 0,
+        })
+    return {"chapters": plain_chapters, "total": len(plain_chapters)}
+
+
+@api_router.post("/documents/{document_id}/audiobook/chapters")
+async def export_audiobook_chapters(
+    document_id: str,
+    voice: str = "onyx",
+    speed: float = 1.0,
+    current_user: User = Depends(get_current_user),
+):
+    """Per-chapter audiobook export — returns a ZIP of one MP3 per chapter."""
+    doc = await db.documents.find_one(
+        {"id": document_id, "user_id": current_user.id}, {"_id": 0}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    title = doc.get("title") or "Untitled"
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", title).strip("_") or "audiobook"
+
+    try:
+        zip_bytes = await export_chapters_zip(
+            html_content=doc.get("content") or "",
+            title=title,
+            voice=voice,
+            speed=speed,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Per-chapter audiobook export failed")
+        raise HTTPException(status_code=502, detail=f"Audiobook service error: {exc}")
+
+    await db.documents.update_one(
+        {"id": document_id},
+        {"$set": {"last_audio_export_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_name}_chapters.zip"',
         },
     )
 
