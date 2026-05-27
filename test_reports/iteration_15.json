@@ -1,0 +1,48 @@
+{
+  "summary": "Iteration 15 fully verified. Owner account (Carlos Callahan / bagmoneyceo@gmail.com) login works and returns is_super_admin=true + referral_code. Extended affiliate settings schema (signup/MRR commission split, active_days_required, payout_method, stripe_connect_enabled, perks_description) is seeded to the user's exact spec (30/10/60d/active_subscription_60d/cash_and_perks/stripe_connect) and the public/admin GET+PUT endpoints validate properly. is_super_admin field is now present on every user-response shape (register, login, /auth/me, elevenlabs-set, elevenlabs-clear). Admin UI renders all 14 required testids for owner, shows the billing-warning, persists settings via PUT, and correctly blocks non-admins with a Lock card.",
+  "backend_tests_run": "14/14 PASSED in /app/backend/tests/test_iter15_admin_affiliate.py (owner login, /auth/me, is_super_admin in register/login/elevenlabs responses, seeded settings match spec, PUT happy path + 4 validation 400s + 1 non-admin 403, leaderboard + badge regression)",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/admin/affiliate/settings", "issue": "iter14's /app/backend/tests/test_affiliate.py contains 3 stale tests written against the OLD schema (commission_percent + reward_type='credits'). They now fail because the schema legitimately changed this iteration to signup_commission_percent + mrr_commission_percent + reward_type='cash_and_perks' default. These are stale test assertions, NOT product regressions. Main agent should update or delete those 3 tests; iter15's test file already covers the new schema fully."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "frontend_tests_covered": [
+    "Owner login (via API) + localStorage seed → /dashboard renders admin-link-dashboard (Shield button) - PASS",
+    "Click admin-link-dashboard → /admin/affiliate URL navigation - PASS",
+    "All 14 required testids render: admin-back-btn, admin-enabled-switch, admin-reward-type, admin-signup-pct, admin-mrr-pct, admin-qualifying-event, admin-active-days, admin-min-payout, admin-payout-method, admin-currency, admin-stripe-toggle, admin-perks, admin-notes, admin-save-btn - PASS",
+    "billing-warning div renders when qualifying_event=active_subscription_60d AND stripe_connect_enabled=false - PASS",
+    "Editing admin-notes → admin-save-btn shows 'Affiliate settings saved' toast; subsequent public GET /api/affiliate/settings returns the new note text - PASS",
+    "admin-back-btn navigates back to /dashboard - PASS",
+    "Fresh registered non-admin user visiting /admin/affiliate sees admin-forbidden card + admin-forbidden-back button - PASS",
+    "Non-admin /dashboard does NOT render admin-link-dashboard - PASS"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_iter15_admin_affiliate.py",
+    "/app/test_reports/pytest/iter15_admin_affiliate.xml",
+    "/app/test_reports/pytest/iter15_regression.xml"
+  ],
+  "critical_code_review_comments": [
+    "Validation in PUT /admin/affiliate/settings short-circuits on first invalid field — acceptable for an admin form but if main agent ever wants per-field error rendering, prefer Pydantic validators returning all errors at once.",
+    "AffiliateSettings Pydantic model uses Optional[float] for percent fields with no Field(..., ge=0, le=100) constraints — server-side range check is done manually in the handler. Works, but moving to Pydantic Field constraints would surface the limits in OpenAPI for the admin UI.",
+    "AdminAffiliatePage.js does an unguarded `useEffect` axios.get on mount even when user is not super-admin (the early return happens but the network request still fires). Tiny — but a `return early` before the axios call would be cleaner.",
+    "needsSubscriptionBilling check in AdminAffiliatePage.js OR's three conditions (active_subscription_60d / first_paid_subscription / mrr_commission_percent>0). Logic is correct but the warning copy only mentions MRR/active-N-days — consider also calling out 'first paid subscription' to avoid confusing the owner if they pick that option.",
+    "No audit log entry for PUT /admin/affiliate/settings — flagged in iter14 review; still applies. Becomes important once real payouts are wired in.",
+    "Default seed of stripe_connect_enabled=false is correct, but there is no startup hook that creates the owner user. Owner was clearly seeded manually (via mongo or earlier iteration script). For reproducible cold-start environments, a documented seed script would be valuable."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter15_admin_affiliate.py (new — 14 tests, 6 classes)"
+  ],
+  "success_rate": {"backend": "100% (14/14 new iter15 tests pass; 9/9 referral regression pass)", "frontend": "100% (all 8 UI assertions pass)"},
+  "test_credentials": "Owner: bagmoneyceo@gmail.com / Surfwall1 (verified working, /app/memory/test_credentials.md is accurate). Non-admin users registered on the fly with TEST_iter15_ / TEST_iter15ui_ prefix.",
+  "seed_data_creation": "Each backend run registers ~4 fresh TEST_iter15_* users (no cleanup needed — orphan users only). Admin-settings tests snapshot the global affiliate_settings doc at module load and restore at teardown so subsequent reads reflect the seeded spec.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iter15 complete and clean. When Stripe Connect onboarding actually lands in a future iteration: (1) ensure admin-stripe-toggle becomes read-only or driven by the onboarding completion webhook (not a freely-editable switch), (2) add UI tests for the onboarding link card, (3) backend should add a state machine (stripe_connect_account_id, stripe_connect_status: 'none'|'pending'|'verified'). The 3 stale tests in /app/backend/tests/test_affiliate.py (TestAffiliateSettingsPublic::test_get_settings_default, TestAffiliateAdminSuper::test_put_admin_success_and_persists, ::test_put_admin_invalid_commission_400) should be either updated to the new schema or removed in favor of iter15's tests.",
+  "rca_of_the_issue": "N/A — feature iteration, no bugs found."
+}

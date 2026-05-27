@@ -128,6 +128,7 @@ class UserResponse(BaseModel):
     name: str
     has_elevenlabs_key: bool = False
     referral_code: Optional[str] = None
+    is_super_admin: bool = False
     created_at: datetime
 
 class TokenResponse(BaseModel):
@@ -362,6 +363,7 @@ async def register(user_data: UserRegister):
         name=user.name,
         has_elevenlabs_key=bool(user.elevenlabs_api_key),
         referral_code=user.referral_code,
+        is_super_admin=user.is_super_admin,
         created_at=user.created_at
     )
 
@@ -388,6 +390,7 @@ async def login(credentials: UserLogin):
         name=user.name,
         has_elevenlabs_key=bool(user.elevenlabs_api_key),
         referral_code=user.referral_code,
+        is_super_admin=user.is_super_admin,
         created_at=user.created_at
     )
     
@@ -408,6 +411,7 @@ async def get_me(current_user: User = Depends(get_current_user)):
         name=current_user.name,
         has_elevenlabs_key=bool(current_user.elevenlabs_api_key),
         referral_code=current_user.referral_code,
+        is_super_admin=current_user.is_super_admin,
         created_at=current_user.created_at
     )
 
@@ -448,12 +452,16 @@ async def my_referrals(current_user: User = Depends(get_current_user)):
 
 DEFAULT_AFFILIATE_SETTINGS = {
     "enabled": True,
-    "reward_type": "credits",  # "credits" | "cash" | "perks" | "none"
-    "commission_percent": 0.0,  # 0 = tracking-only; payout requires Stripe Connect integration
-    "minimum_payout": 50.0,  # USD threshold for cash payouts (when enabled)
-    "qualifying_event": "signup",  # "signup" | "first_paid_subscription" | "first_book_published"
-    "reward_value": 0.0,  # e.g. "$5 credits per signup" when reward_type='credits'
+    "reward_type": "cash_and_perks",  # "credits" | "cash" | "perks" | "cash_and_perks" | "none"
+    "signup_commission_percent": 30.0,  # one-time at qualifying event
+    "mrr_commission_percent": 10.0,  # recurring monthly while invitee remains active
+    "minimum_payout": 50.0,  # USD threshold before cash payout is issued
+    "qualifying_event": "active_subscription_60d",  # signup | first_paid_subscription | first_book_published | active_subscription_60d
+    "active_days_required": 60,
+    "payout_method": "stripe_connect",  # stripe_connect | manual | none
     "currency": "USD",
+    "stripe_connect_enabled": False,  # flipped on once Stripe onboarding is complete
+    "perks_description": "Free book exports, audiobook minutes, and priority support.",
     "notes": "",
 }
 
@@ -483,11 +491,15 @@ async def get_affiliate_settings_public():
 class AffiliateSettings(BaseModel):
     enabled: Optional[bool] = None
     reward_type: Optional[str] = None
-    commission_percent: Optional[float] = None
+    signup_commission_percent: Optional[float] = None
+    mrr_commission_percent: Optional[float] = None
     minimum_payout: Optional[float] = None
     qualifying_event: Optional[str] = None
-    reward_value: Optional[float] = None
+    active_days_required: Optional[int] = None
+    payout_method: Optional[str] = None
     currency: Optional[str] = None
+    stripe_connect_enabled: Optional[bool] = None
+    perks_description: Optional[str] = None
     notes: Optional[str] = None
 
 
@@ -498,14 +510,20 @@ async def update_affiliate_settings(
 ):
     _require_super_admin(current_user)
     updates = {k: v for k, v in payload.model_dump().items() if v is not None}
-    if "reward_type" in updates and updates["reward_type"] not in ("credits", "cash", "perks", "none"):
-        raise HTTPException(status_code=400, detail="reward_type must be one of: credits, cash, perks, none")
-    if "qualifying_event" in updates and updates["qualifying_event"] not in (
-        "signup", "first_paid_subscription", "first_book_published"
-    ):
-        raise HTTPException(status_code=400, detail="qualifying_event must be one of: signup, first_paid_subscription, first_book_published")
-    if "commission_percent" in updates and not (0.0 <= updates["commission_percent"] <= 100.0):
-        raise HTTPException(status_code=400, detail="commission_percent must be between 0 and 100")
+    valid_reward = ("credits", "cash", "perks", "cash_and_perks", "none")
+    if "reward_type" in updates and updates["reward_type"] not in valid_reward:
+        raise HTTPException(status_code=400, detail=f"reward_type must be one of: {', '.join(valid_reward)}")
+    valid_event = ("signup", "first_paid_subscription", "first_book_published", "active_subscription_60d")
+    if "qualifying_event" in updates and updates["qualifying_event"] not in valid_event:
+        raise HTTPException(status_code=400, detail=f"qualifying_event must be one of: {', '.join(valid_event)}")
+    valid_payout = ("stripe_connect", "manual", "none")
+    if "payout_method" in updates and updates["payout_method"] not in valid_payout:
+        raise HTTPException(status_code=400, detail=f"payout_method must be one of: {', '.join(valid_payout)}")
+    for pct_field in ("signup_commission_percent", "mrr_commission_percent"):
+        if pct_field in updates and not (0.0 <= updates[pct_field] <= 100.0):
+            raise HTTPException(status_code=400, detail=f"{pct_field} must be between 0 and 100")
+    if "active_days_required" in updates and updates["active_days_required"] < 0:
+        raise HTTPException(status_code=400, detail="active_days_required must be non-negative")
     await db.affiliate_settings.update_one(
         {"_id": "global"},
         {"$set": updates},
@@ -583,6 +601,7 @@ async def set_elevenlabs_key(
         name=current_user.name,
         has_elevenlabs_key=True,
         referral_code=current_user.referral_code,
+        is_super_admin=current_user.is_super_admin,
         created_at=current_user.created_at,
     )
 
@@ -599,6 +618,7 @@ async def clear_elevenlabs_key(current_user: User = Depends(get_current_user)):
         name=current_user.name,
         has_elevenlabs_key=False,
         referral_code=current_user.referral_code,
+        is_super_admin=current_user.is_super_admin,
         created_at=current_user.created_at,
     )
 

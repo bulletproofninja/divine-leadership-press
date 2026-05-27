@@ -6,6 +6,7 @@ import LandingPage from './pages/LandingPage';
 import Dashboard from './pages/Dashboard';
 import EditorPage from './pages/EditorPage';
 import HelpPage from './pages/HelpPage';
+import AdminAffiliatePage from './pages/AdminAffiliatePage';
 import { Toaster } from './components/ui/sonner';
 
 function App() {
@@ -78,6 +79,16 @@ function App() {
             }
           />
           <Route path="/help" element={<HelpPage />} />
+          <Route
+            path="/admin/affiliate"
+            element={
+              user ? (
+                <AdminAffiliatePage user={user} />
+              ) : (
+                <Navigate to="/" replace />
+              )
+            }
+          />
         </Routes>
       </BrowserRouter>
       <Toaster />
