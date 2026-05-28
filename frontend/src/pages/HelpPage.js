@@ -9,7 +9,7 @@ import { Input } from '../components/ui/input';
 import {
   ArrowLeft, Upload, FileText, ImageIcon, BookOpen, Sparkles, ScanSearch,
   Mic, Headphones, FileDown, History, MessageSquare, Layers, Globe, FileType,
-  Lightbulb, Shield, HelpCircle, Share2, Copy, Users, Trophy, Award,
+  Lightbulb, Shield, HelpCircle, Share2, Copy, Users, Trophy, Award, CreditCard, ExternalLink, Loader2,
 } from 'lucide-react';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -187,6 +187,8 @@ export default function HelpPage() {
   const [myBadge, setMyBadge] = useState(null);
   const [programSettings, setProgramSettings] = useState(null);
   const [earnings, setEarnings] = useState(null);
+  const [connect, setConnect] = useState(null);
+  const [connectLoading, setConnectLoading] = useState(false);
   const isAuthed = !!localStorage.getItem('token');
 
   useEffect(() => {
@@ -206,7 +208,45 @@ export default function HelpPage() {
     axios.get(`${API}/billing/commissions`, getAuthHeaders())
       .then((r) => setEarnings(r.data))
       .catch(() => setEarnings(null));
+    axios.get(`${API}/affiliate/connect/status`, getAuthHeaders())
+      .then((r) => setConnect(r.data))
+      .catch(() => setConnect(null));
   }, [isAuthed]);
+
+  const onboardPayouts = async () => {
+    setConnectLoading(true);
+    try {
+      const r = await axios.post(
+        `${API}/affiliate/connect/onboard`,
+        { origin_url: window.location.origin },
+        getAuthHeaders(),
+      );
+      if (r.data?.url) {
+        window.location.href = r.data.url;
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Could not start onboarding');
+      setConnectLoading(false);
+    }
+  };
+
+  const openConnectDashboard = async () => {
+    setConnectLoading(true);
+    try {
+      const r = await axios.post(
+        `${API}/affiliate/connect/dashboard-link`,
+        {},
+        getAuthHeaders(),
+      );
+      if (r.data?.url) {
+        window.open(r.data.url, '_blank');
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Could not open Stripe dashboard');
+    } finally {
+      setConnectLoading(false);
+    }
+  };
 
   const referralUrl = referral
     ? `${window.location.origin}/?ref=${referral.referral_code}`
@@ -526,7 +566,7 @@ export default function HelpPage() {
           )}
 
           {/* Affiliate earnings (private) */}
-          {isAuthed && earnings && earnings.totals && earnings.totals.count > 0 && (
+          {isAuthed && referral?.referral_code && (
             <motion.section
               initial={{ opacity: 0, y: 10 }}
               whileInView={{ opacity: 1, y: 0 }}
@@ -551,6 +591,108 @@ export default function HelpPage() {
                 Every paid subscription from an author you invited.
               </p>
               <Card className="p-6 bg-card/60 backdrop-blur-sm border-l-4 border-l-emerald-500 rounded-sm">
+                {/* Payout account status */}
+                {isAuthed && (
+                  <div
+                    data-testid="connect-payout-card"
+                    className="mb-5 pb-5 border-b"
+                  >
+                    {connect?.ready_for_payouts ? (
+                      <div className="flex items-center justify-between gap-3 flex-wrap">
+                        <div className="flex items-start gap-3 min-w-0">
+                          <div className="p-2 rounded-sm bg-emerald-50 border border-emerald-200 text-emerald-700 flex-shrink-0">
+                            <CreditCard className="h-4 w-4" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="text-sm font-semibold mb-0.5">
+                              Payout account connected
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                              Commissions will auto-transfer to your bank via Stripe Express.
+                            </p>
+                          </div>
+                        </div>
+                        <Button
+                          data-testid="connect-dashboard-btn"
+                          variant="outline"
+                          size="sm"
+                          className="rounded-sm"
+                          onClick={openConnectDashboard}
+                          disabled={connectLoading}
+                        >
+                          {connectLoading ? (
+                            <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" />
+                          ) : (
+                            <ExternalLink className="h-3.5 w-3.5 mr-2" />
+                          )}
+                          Stripe dashboard
+                        </Button>
+                      </div>
+                    ) : connect?.connected ? (
+                      <div className="flex items-center justify-between gap-3 flex-wrap">
+                        <div className="flex items-start gap-3 min-w-0">
+                          <div className="p-2 rounded-sm bg-amber-50 border border-amber-200 text-amber-700 flex-shrink-0">
+                            <CreditCard className="h-4 w-4" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="text-sm font-semibold mb-0.5">
+                              Finish setting up your payout account
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                              Stripe still needs a few details before your commissions can be paid.
+                            </p>
+                          </div>
+                        </div>
+                        <Button
+                          data-testid="connect-resume-btn"
+                          size="sm"
+                          className="rounded-sm"
+                          onClick={onboardPayouts}
+                          disabled={connectLoading}
+                        >
+                          {connectLoading ? (
+                            <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" />
+                          ) : (
+                            <CreditCard className="h-3.5 w-3.5 mr-2" />
+                          )}
+                          Resume onboarding
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-between gap-3 flex-wrap">
+                        <div className="flex items-start gap-3 min-w-0">
+                          <div className="p-2 rounded-sm bg-primary/10 text-primary flex-shrink-0">
+                            <CreditCard className="h-4 w-4" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="text-sm font-semibold mb-0.5">
+                              Connect your payout account to get paid automatically
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                              Stripe Express — 2-minute setup. Commissions land directly in your bank
+                              with no manual review.
+                            </p>
+                          </div>
+                        </div>
+                        <Button
+                          data-testid="connect-onboard-btn"
+                          size="sm"
+                          className="rounded-sm"
+                          onClick={onboardPayouts}
+                          disabled={connectLoading}
+                        >
+                          {connectLoading ? (
+                            <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" />
+                          ) : (
+                            <CreditCard className="h-3.5 w-3.5 mr-2" />
+                          )}
+                          Connect with Stripe
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-5">
                   <div className="p-3 rounded-sm border bg-accent/30 text-center">
                     <div className="text-[10px] uppercase tracking-wider font-mono text-muted-foreground">
@@ -560,7 +702,7 @@ export default function HelpPage() {
                       data-testid="earnings-pending"
                       className="text-2xl font-heading font-semibold text-amber-700 mt-1"
                     >
-                      ${earnings.totals.pending.toFixed(2)}
+                      ${(earnings?.totals?.pending || 0).toFixed(2)}
                     </div>
                   </div>
                   <div className="p-3 rounded-sm border bg-accent/30 text-center">
@@ -571,7 +713,7 @@ export default function HelpPage() {
                       data-testid="earnings-paid"
                       className="text-2xl font-heading font-semibold text-emerald-700 mt-1"
                     >
-                      ${earnings.totals.paid.toFixed(2)}
+                      ${(earnings?.totals?.paid || 0).toFixed(2)}
                     </div>
                   </div>
                   <div className="p-3 rounded-sm border bg-accent/30 text-center">
@@ -582,11 +724,12 @@ export default function HelpPage() {
                       data-testid="earnings-count"
                       className="text-2xl font-heading font-semibold mt-1"
                     >
-                      {earnings.totals.count}
+                      {earnings?.totals?.count || 0}
                     </div>
                   </div>
                 </div>
 
+                {earnings?.commissions?.length > 0 && (
                 <div data-testid="earnings-list" className="border-t pt-3">
                   <div className="text-[10px] uppercase tracking-wider font-mono text-muted-foreground mb-2">
                     Recent commissions
@@ -620,6 +763,7 @@ export default function HelpPage() {
                     ))}
                   </ul>
                 </div>
+                )}
               </Card>
             </motion.section>
           )}

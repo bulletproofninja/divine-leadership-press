@@ -15,6 +15,29 @@ A book publishing / writing application that allows users to upload a Word doc, 
 - Export to real PDF at **all standard KDP trim sizes** + ePub
 - Navy-blue / cream classic publishing aesthetic
 
+## Implemented (as of 2026-02-28) — LIVE STRIPE + CONNECT WIRED UP
+- [x] **Auto-paying affiliates via Stripe Connect (Express)**:
+  - `subscription_billing.py` extended with `create_express_account`, `create_onboarding_link`, `create_express_login_link`, `retrieve_account_status`, `create_transfer`.
+  - New endpoints:
+    - `POST /api/affiliate/connect/onboard` → creates Express account (if needed) + mints Stripe-hosted onboarding URL
+    - `GET /api/affiliate/connect/status` → returns charges_enabled / payouts_enabled / requirements_due
+    - `POST /api/affiliate/connect/dashboard-link` → SSO link into Stripe Express dashboard
+    - `POST /api/admin/commissions/auto-payout` → batch Stripe Transfer per pending commission with per-row failure reasons
+  - User model: added `stripe_connect_account_id`. Commissions: now persist `stripe_transfer_id` + `payout_method='stripe_connect'`.
+  - Frontend:
+    - HelpPage Earnings card now opens with **"Connect your payout account to get paid automatically — Stripe Express, 2-minute setup"** with a Connect-with-Stripe button. After onboarding, shows "Payout account connected" + Stripe dashboard SSO link.
+    - New `/affiliate/connect/return` and `/affiliate/connect/refresh` routes for Stripe's redirect handlers.
+    - AdminCommissionsPage: new **"Auto-pay via Stripe"** button next to "Mark as paid" — sends Transfers in batch, shows failure reasons inline (no_connect_account / account_not_ready / requirements_due / stripe errors).
+  - Graceful degradation: if Connect isn't enabled on the platform account yet, onboarding returns HTTP 503 with a clear "owner must enable at dashboard.stripe.com/connect" message — surfaces directly to the affiliate as a toast.
+
+## ⚠️ Pending owner action to make auto-payouts FULLY work
+- **Enable Stripe Connect on your platform account** (5-min one-time setup):
+  1. Stripe Dashboard → **Connect** → "Get started"
+  2. Choose **Platform or marketplace**
+  3. Fill out the Platform Profile (business name, support email, brand colours)
+  4. That's it — no code changes needed; the affiliate "Connect with Stripe" button will start working immediately.
+- After at least one affiliate has onboarded and earned a commission, you can batch-pay them all in one click at `/admin/commissions` → "Auto-pay via Stripe".
+
 ## Implemented (as of 2026-02-28) — LIVE STRIPE WIRED UP
 - [x] **True recurring subscriptions** using owner's LIVE Stripe account (`acct_1T9pykLv0zc3PRer`, `besthustlemindset@gmail.com`):
   - Raw `stripe` Python SDK (v14.4.1) added; new `/app/backend/subscription_billing.py` module.

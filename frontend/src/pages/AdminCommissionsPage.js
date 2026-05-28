@@ -12,7 +12,7 @@ import {
 } from '../components/ui/select';
 import { Checkbox } from '../components/ui/checkbox';
 import {
-  ArrowLeft, Shield, Loader2, Lock, DollarSign, CheckCircle2, Banknote,
+  ArrowLeft, Shield, Loader2, Lock, DollarSign, CheckCircle2, Banknote, Zap, AlertTriangle,
 } from 'lucide-react';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -53,6 +53,8 @@ export default function AdminCommissionsPage({ user }) {
   const [payoutMethod, setPayoutMethod] = useState('manual');
   const [payoutReference, setPayoutReference] = useState('');
   const [marking, setMarking] = useState(false);
+  const [autoPaying, setAutoPaying] = useState(false);
+  const [autoPayoutResult, setAutoPayoutResult] = useState(null);
 
   const load = async () => {
     setLoading(true);
@@ -123,6 +125,37 @@ export default function AdminCommissionsPage({ user }) {
       toast.error(error.response?.data?.detail || 'Could not mark commissions paid');
     } finally {
       setMarking(false);
+    }
+  };
+
+  const autoPayout = async () => {
+    if (selected.size === 0) {
+      toast.error('Pick at least one commission row');
+      return;
+    }
+    setAutoPaying(true);
+    setAutoPayoutResult(null);
+    try {
+      const r = await axios.post(
+        `${API}/admin/commissions/auto-payout`,
+        { commission_ids: Array.from(selected) },
+        getAuthHeaders(),
+      );
+      const data = r.data || {};
+      setAutoPayoutResult(data);
+      if (data.paid > 0 && data.failed?.length === 0) {
+        toast.success(`Auto-paid ${data.paid} commission(s) via Stripe Connect`);
+      } else if (data.paid > 0 && data.failed?.length) {
+        toast.warning(`Paid ${data.paid}, ${data.failed.length} failed — see details below`);
+      } else {
+        toast.error(`Could not auto-pay any rows — ${data.failed?.length || 0} failed`);
+      }
+      setSelected(new Set());
+      load();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Auto-payout failed');
+    } finally {
+      setAutoPaying(false);
     }
   };
 
@@ -250,8 +283,9 @@ export default function AdminCommissionsPage({ user }) {
               <Button
                 data-testid="mark-paid-btn"
                 onClick={markPaid}
-                disabled={selected.size === 0 || marking}
+                disabled={selected.size === 0 || marking || autoPaying}
                 size="lg"
+                variant="outline"
                 className="rounded-sm"
               >
                 {marking ? (
@@ -261,7 +295,51 @@ export default function AdminCommissionsPage({ user }) {
                 )}
                 Mark {selected.size || ''} as paid {selected.size > 0 ? `· ${fmt(selectedTotal)}` : ''}
               </Button>
+              <Button
+                data-testid="auto-payout-btn"
+                onClick={autoPayout}
+                disabled={selected.size === 0 || marking || autoPaying}
+                size="lg"
+                className="rounded-sm"
+                title="Send via Stripe Connect — recipient must have an active Express account"
+              >
+                {autoPaying ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Zap className="h-4 w-4 mr-2" />
+                )}
+                Auto-pay via Stripe
+              </Button>
             </div>
+
+            {autoPayoutResult?.failed?.length > 0 && (
+              <Card
+                data-testid="auto-payout-failures"
+                className="mb-4 p-4 border-l-4 border-l-amber-500 bg-amber-50/60"
+              >
+                <div className="flex items-start gap-2 mb-2">
+                  <AlertTriangle className="h-4 w-4 text-amber-700 mt-0.5" />
+                  <div className="text-sm">
+                    <div className="font-semibold mb-1">
+                      {autoPayoutResult.failed.length} row(s) couldn't be auto-paid
+                    </div>
+                    <ul className="space-y-1 text-xs font-mono text-amber-900">
+                      {autoPayoutResult.failed.slice(0, 10).map((f, idx) => (
+                        <li key={idx}>
+                          • {f.commission_id?.slice(0, 8)}… — <strong>{f.reason}</strong>
+                          {f.requirements_due?.length > 0 && (
+                            <span className="ml-1 text-amber-700">
+                              (needs: {f.requirements_due.slice(0, 3).join(', ')}
+                              {f.requirements_due.length > 3 ? '…' : ''})
+                            </span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              </Card>
+            )}
 
             <div className="flex gap-3 mb-4">
               <Button

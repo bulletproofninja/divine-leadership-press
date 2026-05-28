@@ -189,3 +189,84 @@ def create_portal_session(*, stripe_customer_id: str, return_url: str) -> stripe
 def verify_webhook(payload: bytes, sig_header: str, secret: str):
     """Verify a webhook signature and return the parsed event."""
     return stripe.Webhook.construct_event(payload, sig_header, secret)
+
+
+# ---- Stripe Connect (Express) — affiliate payouts -------------------------
+def create_express_account(*, email: str, user_id: str, country: str = "US") -> stripe.Account:
+    """Create a connected Express account for an affiliate.
+
+    The owner's platform must have completed Connect onboarding at
+    https://dashboard.stripe.com/connect (one-time setup). Until then, this
+    call raises stripe.error.InvalidRequestError, which we surface as a 400.
+    """
+    assert_configured()
+    return stripe.Account.create(
+        type="express",
+        country=country,
+        email=email,
+        capabilities={
+            "transfers": {"requested": True},
+        },
+        business_type="individual",
+        metadata={
+            "dlp_user_id": user_id,
+            "source": "dlp_affiliate",
+        },
+    )
+
+
+def create_onboarding_link(*, account_id: str, refresh_url: str, return_url: str) -> stripe.AccountLink:
+    """Generate a single-use Stripe-hosted onboarding URL for the affiliate."""
+    assert_configured()
+    return stripe.AccountLink.create(
+        account=account_id,
+        refresh_url=refresh_url,
+        return_url=return_url,
+        type="account_onboarding",
+    )
+
+
+def create_express_login_link(*, account_id: str) -> stripe.LoginLink:
+    """Single-sign-on link to the Express dashboard for an affiliate."""
+    assert_configured()
+    return stripe.Account.create_login_link(account_id)
+
+
+def retrieve_account_status(account_id: str) -> dict:
+    """Lightweight account status for the affiliate's dashboard card."""
+    assert_configured()
+    acct = stripe.Account.retrieve(account_id)
+    requirements = acct.requirements or {}
+    return {
+        "account_id": acct.id,
+        "charges_enabled": bool(acct.charges_enabled),
+        "payouts_enabled": bool(acct.payouts_enabled),
+        "details_submitted": bool(acct.details_submitted),
+        "requirements_due": list(requirements.get("currently_due") or []),
+        "disabled_reason": requirements.get("disabled_reason"),
+        "email": acct.email,
+    }
+
+
+def create_transfer(
+    *,
+    amount_cents: int,
+    currency: str,
+    destination_account_id: str,
+    metadata: Optional[dict] = None,
+    description: Optional[str] = None,
+) -> stripe.Transfer:
+    """Transfer funds from the platform balance to a connected account.
+
+    This is the auto-payout mechanism. Funds must be available in the platform
+    balance — Stripe holds new subscription payments for ~2-7 days before they
+    become available, depending on country.
+    """
+    assert_configured()
+    return stripe.Transfer.create(
+        amount=int(amount_cents),
+        currency=currency,
+        destination=destination_account_id,
+        description=description,
+        metadata=metadata or {},
+    )

@@ -86,6 +86,7 @@ from emergentintegrations.payments.stripe.checkout import (
     CheckoutStatusResponse,
 )
 import subscription_billing as subs_billing
+import stripe  # for stripe.error.InvalidRequestError exception handling
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -133,6 +134,7 @@ class User(BaseModel):
     referred_by: Optional[str] = None  # the referral_code of whoever referred this user
     is_super_admin: bool = False  # owner / platform admin
     stripe_customer_id: Optional[str] = None  # set after first Stripe checkout
+    stripe_connect_account_id: Optional[str] = None  # affiliate's Connect (Express) account
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class UserRegister(BaseModel):
@@ -1268,6 +1270,225 @@ async def admin_mark_commissions_paid(
         },
     )
     return {"marked_paid": result.modified_count}
+
+
+# --- STRIPE CONNECT — affiliate auto-payouts ---
+
+class ConnectOnboardRequest(BaseModel):
+    origin_url: str
+
+
+def _connect_urls(origin: str) -> tuple[str, str]:
+    origin = (origin or "").strip().rstrip("/")
+    return (
+        f"{origin}/affiliate/connect/refresh",
+        f"{origin}/affiliate/connect/return",
+    )
+
+
+@api_router.post("/affiliate/connect/onboard")
+async def affiliate_connect_onboard(
+    payload: ConnectOnboardRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Start (or resume) Stripe Express onboarding for the affiliate.
+
+    On first call we create a connected Account and persist its ID on the user.
+    On every call we mint a fresh single-use AccountLink and return its URL.
+    """
+    if not subs_billing.is_configured():
+        raise HTTPException(status_code=400, detail="Stripe Connect requires the owner Stripe key.")
+
+    user_doc = await db.users.find_one({"id": current_user.id}, {"_id": 0})
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    account_id = (user_doc or {}).get("stripe_connect_account_id")
+    try:
+        if not account_id:
+            acct = subs_billing.create_express_account(
+                email=current_user.email,
+                user_id=current_user.id,
+            )
+            account_id = acct.id
+            await db.users.update_one(
+                {"id": current_user.id},
+                {"$set": {"stripe_connect_account_id": account_id}},
+            )
+        refresh_url, return_url = _connect_urls(payload.origin_url)
+        link = subs_billing.create_onboarding_link(
+            account_id=account_id,
+            refresh_url=refresh_url,
+            return_url=return_url,
+        )
+    except stripe.error.InvalidRequestError as exc:
+        msg = exc.user_message or str(exc)
+        if "signed up for Connect" in msg or "you can do that at" in msg:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Stripe Connect is not yet enabled on the platform account. "
+                    "The owner must enable it at https://dashboard.stripe.com/connect "
+                    "before affiliates can onboard."
+                ),
+            )
+        raise HTTPException(status_code=502, detail=f"Stripe error: {msg}")
+    except Exception as exc:
+        logger.exception("Connect onboarding failed")
+        raise HTTPException(status_code=502, detail=f"Stripe error: {exc}")
+
+    return {"account_id": account_id, "url": link.url, "expires_at": link.expires_at}
+
+
+@api_router.get("/affiliate/connect/status")
+async def affiliate_connect_status(current_user: User = Depends(get_current_user)):
+    """Return this affiliate's Connect onboarding state for the dashboard card."""
+    user_doc = await db.users.find_one({"id": current_user.id}, {"_id": 0})
+    account_id = (user_doc or {}).get("stripe_connect_account_id")
+    if not account_id:
+        return {"connected": False, "account_id": None}
+    if not subs_billing.is_configured():
+        return {"connected": True, "account_id": account_id, "configured": False}
+    try:
+        status = subs_billing.retrieve_account_status(account_id)
+    except stripe.error.InvalidRequestError as exc:
+        # Account may have been deleted from Stripe Dashboard
+        logger.warning("Connect account %s not retrievable: %s", account_id, exc)
+        return {"connected": False, "account_id": None, "error": "stripe_account_missing"}
+    except Exception as exc:
+        logger.exception("Connect status fetch failed")
+        raise HTTPException(status_code=502, detail=f"Stripe error: {exc}")
+    return {"connected": True, **status, "ready_for_payouts": status.get("payouts_enabled") and status.get("charges_enabled")}
+
+
+@api_router.post("/affiliate/connect/dashboard-link")
+async def affiliate_connect_dashboard(current_user: User = Depends(get_current_user)):
+    """SSO link into the affiliate's Stripe Express dashboard."""
+    user_doc = await db.users.find_one({"id": current_user.id}, {"_id": 0})
+    account_id = (user_doc or {}).get("stripe_connect_account_id")
+    if not account_id:
+        raise HTTPException(status_code=400, detail="No connected account yet — onboard first.")
+    try:
+        link = subs_billing.create_express_login_link(account_id=account_id)
+    except Exception as exc:
+        logger.exception("Connect dashboard link failed")
+        raise HTTPException(status_code=502, detail=f"Stripe error: {exc}")
+    return {"url": link.url}
+
+
+class AutoPayoutRequest(BaseModel):
+    commission_ids: List[str]
+
+
+@api_router.post("/admin/commissions/auto-payout")
+async def admin_auto_payout(
+    payload: AutoPayoutRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Batch-transfer pending commissions to each affiliate's Stripe Connect account.
+
+    Logic per row:
+      1. Look up the referrer user → must have stripe_connect_account_id.
+      2. Verify the account is ready (charges_enabled & payouts_enabled).
+      3. Create a Stripe Transfer for the commission amount.
+      4. Mark the commission row paid, store the transfer ID for traceability.
+    Failed rows are returned in the response with reasons; successful rows are paid.
+    """
+    _require_super_admin(current_user)
+    if not subs_billing.is_configured():
+        raise HTTPException(status_code=400, detail="Stripe is not configured.")
+    if not payload.commission_ids:
+        raise HTTPException(status_code=400, detail="commission_ids cannot be empty.")
+
+    rows = await db.commissions.find(
+        {"id": {"$in": payload.commission_ids}, "status": "pending"},
+        {"_id": 0},
+    ).to_list(2000)
+    if not rows:
+        return {"paid": 0, "failed": [], "transfers": []}
+
+    # Group by referrer for fewer Stripe API calls
+    by_referrer: dict = {}
+    for r in rows:
+        by_referrer.setdefault(r["referrer_user_id"], []).append(r)
+
+    # Cache account-status lookups per referrer
+    paid_ids: list = []
+    transfers_out: list = []
+    failed: list = []
+
+    for referrer_id, ref_rows in by_referrer.items():
+        ref_user = await db.users.find_one({"id": referrer_id}, {"_id": 0})
+        account_id = (ref_user or {}).get("stripe_connect_account_id")
+        if not account_id:
+            for r in ref_rows:
+                failed.append({"commission_id": r["id"], "reason": "no_connect_account"})
+            continue
+        try:
+            status = subs_billing.retrieve_account_status(account_id)
+        except Exception as exc:
+            for r in ref_rows:
+                failed.append({"commission_id": r["id"], "reason": f"account_lookup_failed: {exc}"})
+            continue
+        if not (status.get("payouts_enabled") and status.get("charges_enabled")):
+            for r in ref_rows:
+                failed.append({
+                    "commission_id": r["id"],
+                    "reason": "account_not_ready",
+                    "requirements_due": status.get("requirements_due"),
+                })
+            continue
+
+        for r in ref_rows:
+            amount_cents = int(round(float(r["amount"]) * 100))
+            if amount_cents <= 0:
+                failed.append({"commission_id": r["id"], "reason": "zero_amount"})
+                continue
+            try:
+                transfer = subs_billing.create_transfer(
+                    amount_cents=amount_cents,
+                    currency=(r.get("currency") or "usd").lower(),
+                    destination_account_id=account_id,
+                    metadata={
+                        "dlp_commission_id": r["id"],
+                        "dlp_referrer_user_id": referrer_id,
+                        "dlp_referee_user_id": r.get("referee_user_id", ""),
+                        "dlp_kind": r.get("kind", ""),
+                    },
+                    description=f"DLP affiliate commission ({r.get('kind', 'commission')})",
+                )
+            except stripe.error.InvalidRequestError as exc:
+                msg = exc.user_message or str(exc)
+                failed.append({"commission_id": r["id"], "reason": f"stripe_invalid: {msg}"})
+                continue
+            except Exception as exc:
+                failed.append({"commission_id": r["id"], "reason": f"stripe_error: {exc}"})
+                continue
+
+            now = datetime.now(timezone.utc).isoformat()
+            await db.commissions.update_one(
+                {"id": r["id"]},
+                {"$set": {
+                    "status": "paid",
+                    "paid_at": now,
+                    "payout_method": "stripe_connect",
+                    "payout_reference": transfer.id,
+                    "stripe_transfer_id": transfer.id,
+                    "updated_at": now,
+                }},
+            )
+            paid_ids.append(r["id"])
+            transfers_out.append({
+                "commission_id": r["id"],
+                "transfer_id": transfer.id,
+                "amount": r["amount"],
+            })
+
+    return {
+        "paid": len(paid_ids),
+        "failed": failed,
+        "transfers": transfers_out,
+    }
 
 
 class ElevenLabsKeyRequest(BaseModel):

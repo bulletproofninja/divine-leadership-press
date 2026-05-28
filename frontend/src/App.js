@@ -10,6 +10,7 @@ import AdminAffiliatePage from './pages/AdminAffiliatePage';
 import BillingPage from './pages/BillingPage';
 import BillingSuccess from './pages/BillingSuccess';
 import AdminCommissionsPage from './pages/AdminCommissionsPage';
+import AffiliateConnectReturn from './pages/AffiliateConnectReturn';
 import { Toaster } from './components/ui/sonner';
 
 function App() {
@@ -117,6 +118,26 @@ function App() {
             element={
               user ? (
                 <AdminCommissionsPage user={user} />
+              ) : (
+                <Navigate to="/" replace />
+              )
+            }
+          />
+          <Route
+            path="/affiliate/connect/return"
+            element={
+              user ? (
+                <AffiliateConnectReturn />
+              ) : (
+                <Navigate to="/" replace />
+              )
+            }
+          />
+          <Route
+            path="/affiliate/connect/refresh"
+            element={
+              user ? (
+                <AffiliateConnectReturn refreshMode />
               ) : (
                 <Navigate to="/" replace />
               )
