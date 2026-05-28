@@ -29,6 +29,11 @@ from ai_editor import (
     generate_synopsis,
 )
 from ai_copyeditor import run_copyedit_pass, STYLE_GUIDES
+from writing_agent import (
+    agent_chat,
+    run_inline_command,
+    VOICE_PRESETS,
+)
 from audio_narrator import (
     list_voices as audio_list_voices,
     narrate_text,
@@ -1762,6 +1767,187 @@ AI_TOOLS = {
 class AIEditRequest(BaseModel):
     tool: str
     content: Optional[str] = None  # If omitted, uses the saved document content
+
+
+# --- WRITING AGENT (chat + Cmd-K inline command) ---
+
+class AgentChatMessage(BaseModel):
+    role: str          # 'user' | 'assistant'
+    content: str
+
+
+class AgentChatRequest(BaseModel):
+    document_id: str
+    message: str
+    voice: Optional[str] = "match_my_voice"
+    session_id: Optional[str] = None  # client-supplied per-document session id
+
+
+class AgentInlineRequest(BaseModel):
+    document_id: Optional[str] = None
+    selected_text: str
+    instruction: str
+    voice: Optional[str] = "match_my_voice"
+
+
+def _voice_sample_from_doc(doc: dict, max_chars: int = 3000) -> Optional[str]:
+    """Pull a representative voice sample from the document for voice-matching."""
+    if not doc:
+        return None
+    content = doc.get("content") or ""
+    if not content:
+        return None
+    # Strip HTML inline using a small helper (we already have one in ai_editor)
+    import re as _re
+    text = _re.sub(r"<br\s*/?>", "\n", content)
+    text = _re.sub(r"</p\s*>", "\n\n", text)
+    text = _re.sub(r"</(h[1-6])\s*>", "\n\n", text)
+    text = _re.sub(r"<[^>]+>", "", text)
+    text = _re.sub(r"\n{3,}", "\n\n", text).strip()
+    if len(text) <= max_chars:
+        return text or None
+    # Take the middle of the document — usually the most representative voice
+    mid = len(text) // 2
+    half = max_chars // 2
+    return text[max(0, mid - half): mid + half]
+
+
+@api_router.get("/ai/agent/voices")
+async def list_agent_voices():
+    """Public — voice presets the writer can choose from."""
+    return {
+        "voices": [
+            {"key": k, "label": v["label"], "description": v["description"]}
+            for k, v in VOICE_PRESETS.items()
+        ]
+    }
+
+
+@api_router.post("/ai/agent/chat")
+async def writing_agent_chat(
+    payload: AgentChatRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """One turn with the per-document writing agent."""
+    msg = (payload.message or "").strip()
+    if not msg:
+        raise HTTPException(status_code=400, detail="Message cannot be empty.")
+    if len(msg) > 4000:
+        raise HTTPException(status_code=400, detail="Message is too long (4000 chars max).")
+
+    doc = await db.documents.find_one(
+        {"id": payload.document_id, "user_id": current_user.id}, {"_id": 0}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    # Load history for this document/session
+    session_id = payload.session_id or f"doc-{payload.document_id}"
+    history_doc = await db.agent_sessions.find_one(
+        {"user_id": current_user.id, "document_id": payload.document_id, "session_id": session_id},
+        {"_id": 0},
+    )
+    history: List[dict] = (history_doc or {}).get("messages", [])
+
+    voice_sample = _voice_sample_from_doc(doc) if payload.voice in (None, "match_my_voice") else None
+
+    try:
+        reply = await agent_chat(
+            user_message=msg,
+            history=history,
+            document_title=doc.get("title"),
+            document_html=doc.get("content"),
+            voice=payload.voice,
+            voice_sample=voice_sample,
+            session_id=session_id,
+        )
+    except Exception as exc:
+        logger.exception("Writing agent chat failed")
+        raise HTTPException(status_code=502, detail=f"Agent error: {exc}")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    new_history = history + [
+        {"role": "user", "content": msg, "ts": now_iso},
+        {"role": "assistant", "content": reply, "ts": now_iso},
+    ]
+    # Cap stored history to last 40 turns to keep documents lean
+    new_history = new_history[-40:]
+
+    await db.agent_sessions.update_one(
+        {"user_id": current_user.id, "document_id": payload.document_id, "session_id": session_id},
+        {"$set": {
+            "user_id": current_user.id,
+            "document_id": payload.document_id,
+            "session_id": session_id,
+            "messages": new_history,
+            "voice": payload.voice or "match_my_voice",
+            "updated_at": now_iso,
+        }},
+        upsert=True,
+    )
+
+    return {"reply": reply, "session_id": session_id, "history_count": len(new_history)}
+
+
+@api_router.get("/ai/agent/history/{document_id}")
+async def writing_agent_history(
+    document_id: str,
+    session_id: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+):
+    """Return the saved conversation history for this document/session."""
+    sid = session_id or f"doc-{document_id}"
+    sess = await db.agent_sessions.find_one(
+        {"user_id": current_user.id, "document_id": document_id, "session_id": sid},
+        {"_id": 0},
+    )
+    return {
+        "session_id": sid,
+        "messages": (sess or {}).get("messages", []),
+        "voice": (sess or {}).get("voice", "match_my_voice"),
+    }
+
+
+@api_router.delete("/ai/agent/history/{document_id}")
+async def clear_writing_agent_history(
+    document_id: str,
+    session_id: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+):
+    """Wipe the saved conversation history for this document."""
+    sid = session_id or f"doc-{document_id}"
+    await db.agent_sessions.delete_one(
+        {"user_id": current_user.id, "document_id": document_id, "session_id": sid},
+    )
+    return {"cleared": True}
+
+
+@api_router.post("/ai/agent/command")
+async def writing_agent_inline_command(
+    payload: AgentInlineRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Cmd-K behaviour: take selected text + an instruction, return rewritten text."""
+    doc = None
+    if payload.document_id:
+        doc = await db.documents.find_one(
+            {"id": payload.document_id, "user_id": current_user.id}, {"_id": 0}
+        )
+    voice_sample = _voice_sample_from_doc(doc) if (doc and payload.voice in (None, "match_my_voice")) else None
+    try:
+        result = await run_inline_command(
+            selected_text=payload.selected_text,
+            instruction=payload.instruction,
+            document_title=(doc or {}).get("title"),
+            voice=payload.voice,
+            voice_sample=voice_sample,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Inline command failed")
+        raise HTTPException(status_code=502, detail=f"Agent error: {exc}")
+    return {"result": result}
 
 
 @api_router.get("/ai/tools")

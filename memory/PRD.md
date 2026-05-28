@@ -15,6 +15,12 @@ A book publishing / writing application that allows users to upload a Word doc, 
 - Export to real PDF at **all standard KDP trim sizes** + ePub
 - Navy-blue / cream classic publishing aesthetic
 
+## Implemented (as of 2026-02-28) — AI WRITING AGENT
+- [x] **Conversational writing agent** (`/api/ai/agent/chat`): per-document, per-session persistent chat with Claude Sonnet 4.5. Knows the current manuscript (truncated to ~12k chars) and prior turns (last 20). Voice presets: match_my_voice (default — samples middle of doc), literary, journalistic, conversational, formal_business, poetic, scholarly.
+- [x] **Inline Cmd-K command bar** (`/api/ai/agent/command`): highlight passage → press Ctrl/Cmd-K → type instruction or click a quick chip → preview rewrite → Accept (replaces selection) / Reject / Retry.
+- [x] Backend: new `/app/backend/writing_agent.py` module + endpoints `/ai/agent/voices`, `/ai/agent/chat`, `/ai/agent/history/{id}` (GET + DELETE), `/ai/agent/command`. New collection `agent_sessions` for history. Imports from existing `emergentintegrations.llm.chat` (no new keys).
+- [x] Frontend: two new components — `/app/frontend/src/components/WritingAgentPanel.js` (right-bottom floating chat with starter chips, voice picker, Insert / Replace selection / Copy actions on assistant messages) and `InlineCommandBar.js` (modal Cmd-K dialog with quick-command chips + diff-style preview). New "Agent" button in the editor header next to Save. Persistent floating ⌘K hint in the bottom-left when the agent is closed. Lint clean.
+
 ## Implemented (as of 2026-02-28) — LIVE STRIPE + CONNECT WIRED UP
 - [x] **Auto-paying affiliates via Stripe Connect (Express)**:
   - `subscription_billing.py` extended with `create_express_account`, `create_onboarding_link`, `create_express_login_link`, `retrieve_account_status`, `create_transfer`.

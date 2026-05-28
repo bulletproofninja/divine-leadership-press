@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
-import { ArrowLeft, Save, Download, History, MessageSquare, Settings, Eye, Globe, Loader2, FileType, BookOpen, Sparkles, Check, X, ScanSearch, AlertCircle, Lightbulb, FileSearch, Headphones, Play, Pause, ImageIcon, Trash2, Mic, MicOff, FileDown, HelpCircle } from 'lucide-react';
+import { ArrowLeft, Save, Download, History, MessageSquare, Settings, Eye, Globe, Loader2, FileType, BookOpen, Sparkles, Check, X, ScanSearch, AlertCircle, Lightbulb, FileSearch, Headphones, Play, Pause, ImageIcon, Trash2, Mic, MicOff, FileDown, HelpCircle, Wand2, BotMessageSquare } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -14,6 +14,8 @@ import axios from 'axios';
 import { toast } from 'sonner';
 import { useNavigate, useParams } from 'react-router-dom';
 import ReactQuill from 'react-quill-new';
+import WritingAgentPanel from '../components/WritingAgentPanel';
+import InlineCommandBar from '../components/InlineCommandBar';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -249,6 +251,42 @@ export default function EditorPage({ user }) {
   const quillRef = useRef(null);
   const continuousRef = useRef(false);
   const mediaStreamRef = useRef(null);
+
+  // Writing agent state
+  const [agentOpen, setAgentOpen] = useState(false);
+  const [cmdkOpen, setCmdkOpen] = useState(false);
+  const [cmdkSelection, setCmdkSelection] = useState('');
+  const [cmdkRange, setCmdkRange] = useState(null);
+
+  // Cmd-K hotkey + open/close handlers
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault();
+        const quill = quillRef.current?.getEditor?.();
+        if (!quill) return;
+        const range = quill.getSelection();
+        const selectionText =
+          range && range.length > 0 ? quill.getText(range.index, range.length) : '';
+        setCmdkSelection(selectionText.trim());
+        setCmdkRange(range);
+        setCmdkOpen(true);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  const applyCmdkResult = (newText) => {
+    const quill = quillRef.current?.getEditor?.();
+    if (!quill || !cmdkRange) return;
+    if (cmdkRange.length > 0) {
+      quill.deleteText(cmdkRange.index, cmdkRange.length, 'user');
+    }
+    quill.insertText(cmdkRange.index, newText, 'user');
+    quill.setSelection(cmdkRange.index, newText.length, 'user');
+    toast.success('Replaced selection');
+  };
 
   useEffect(() => {
     fetchDocument();
@@ -1363,6 +1401,17 @@ export default function EditorPage({ user }) {
                 )}
               </Button>
             </div>
+            <Button
+              data-testid="agent-toggle-btn"
+              variant={agentOpen ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setAgentOpen((v) => !v)}
+              className="rounded-sm"
+              title="Open writing agent"
+            >
+              <BotMessageSquare className="h-4 w-4 mr-1.5" />
+              <span className="hidden sm:inline">Agent</span>
+            </Button>
             <Button
               data-testid="save-btn"
               size="sm"
@@ -2552,6 +2601,48 @@ export default function EditorPage({ user }) {
           </div>
         </div>
       </div>
+
+      {/* Writing Agent — chat sidebar */}
+      <WritingAgentPanel
+        documentId={documentId}
+        editorRef={quillRef}
+        open={agentOpen}
+        onClose={() => setAgentOpen(false)}
+      />
+
+      {/* Floating "Cmd-K" hint when nothing is open */}
+      {!cmdkOpen && !agentOpen && (
+        <button
+          data-testid="cmdk-hint-btn"
+          type="button"
+          onClick={() => {
+            const quill = quillRef.current?.getEditor?.();
+            if (quill) {
+              const range = quill.getSelection();
+              const selectionText = range && range.length > 0
+                ? quill.getText(range.index, range.length)
+                : '';
+              setCmdkSelection(selectionText.trim());
+              setCmdkRange(range);
+            }
+            setCmdkOpen(true);
+          }}
+          className="fixed bottom-4 left-4 z-30 px-3 py-2 rounded-sm border bg-card/95 backdrop-blur-md shadow-lg flex items-center gap-2 text-xs hover:bg-primary hover:text-primary-foreground transition-colors"
+          title="Highlight text then press Cmd/Ctrl-K"
+        >
+          <Wand2 className="h-3.5 w-3.5" />
+          <span className="font-mono uppercase tracking-wider">⌘K</span>
+          <span className="hidden sm:inline text-muted-foreground">Inline rewrite</span>
+        </button>
+      )}
+
+      <InlineCommandBar
+        open={cmdkOpen}
+        onClose={() => setCmdkOpen(false)}
+        documentId={documentId}
+        selectedText={cmdkSelection}
+        onAccept={applyCmdkResult}
+      />
     </div>
   );
 }
