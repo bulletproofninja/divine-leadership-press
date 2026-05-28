@@ -85,9 +85,13 @@ from emergentintegrations.payments.stripe.checkout import (
     CheckoutSessionResponse,
     CheckoutStatusResponse,
 )
+import subscription_billing as subs_billing
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
+
+# Initialize Stripe SDK AFTER loading .env so STRIPE_SECRET_KEY is available
+subs_billing.init_stripe()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -128,6 +132,7 @@ class User(BaseModel):
     referral_code: Optional[str] = None
     referred_by: Optional[str] = None  # the referral_code of whoever referred this user
     is_super_admin: bool = False  # owner / platform admin
+    stripe_customer_id: Optional[str] = None  # set after first Stripe checkout
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class UserRegister(BaseModel):
@@ -639,7 +644,12 @@ async def billing_checkout(
     http_request: Request,
     current_user: User = Depends(get_current_user),
 ):
-    """Create a Stripe Checkout session for a fixed plan."""
+    """Create a Stripe Checkout session for a fixed plan.
+
+    Uses TRUE recurring subscriptions (mode=subscription) against the owner's
+    Stripe account when STRIPE_SECRET_KEY is configured. Falls back to one-time
+    payments via the platform test key when not.
+    """
     plan = get_plan(payload.plan_id)
     if not plan:
         raise HTTPException(status_code=400, detail="Unknown plan.")
@@ -650,6 +660,42 @@ async def billing_checkout(
     success_url = f"{origin}/billing/success?session_id={{CHECKOUT_SESSION_ID}}"
     cancel_url = f"{origin}/billing"
 
+    # Prefer real subscriptions when configured
+    if subs_billing.is_configured():
+        # Reuse customer if we've seen this user before
+        user_doc = await db.users.find_one({"id": current_user.id}, {"_id": 0})
+        stripe_customer_id = (user_doc or {}).get("stripe_customer_id")
+        try:
+            session = subs_billing.create_subscription_checkout(
+                user_id=current_user.id,
+                email=current_user.email,
+                plan_id=plan["id"],
+                success_url=success_url,
+                cancel_url=cancel_url,
+                stripe_customer_id=stripe_customer_id,
+                referred_by=(user_doc or {}).get("referred_by"),
+            )
+        except Exception as exc:
+            logger.exception("Stripe subscription checkout creation failed")
+            raise HTTPException(status_code=502, detail=f"Stripe error: {exc}")
+
+        record = new_transaction_record(
+            session_id=session.id,
+            user_id=current_user.id,
+            email=current_user.email,
+            plan_id=plan["id"],
+            amount=float(plan["amount"]),
+            currency=plan["currency"],
+            metadata={
+                "source": "dlp_subscription",
+                "mode": "subscription",
+                "live": subs_billing.is_live_mode(),
+            },
+        )
+        await db.payment_transactions.insert_one(record)
+        return {"session_id": session.id, "url": session.url}
+
+    # ---- Fallback: one-time payment via emergentintegrations test key ----
     client = _stripe_client(http_request)
     req = CheckoutSessionRequest(
         amount=float(plan["amount"]),
@@ -664,7 +710,7 @@ async def billing_checkout(
         },
     )
     try:
-        session: CheckoutSessionResponse = await client.create_checkout_session(req)
+        session = await client.create_checkout_session(req)
     except Exception as exc:
         logger.exception("Stripe checkout creation failed")
         raise HTTPException(status_code=502, detail=f"Stripe error: {exc}")
@@ -676,10 +722,9 @@ async def billing_checkout(
         plan_id=plan["id"],
         amount=float(plan["amount"]),
         currency=plan["currency"],
-        metadata={"source": "dlp_subscription"},
+        metadata={"source": "dlp_subscription", "mode": "payment"},
     )
     await db.payment_transactions.insert_one(record)
-
     return {"session_id": session.session_id, "url": session.url}
 
 
@@ -691,6 +736,8 @@ async def _credit_successful_payment(
     amount_total_cents: int,
     currency: str,
     metadata: dict,
+    stripe_subscription_id: Optional[str] = None,
+    stripe_customer_id: Optional[str] = None,
 ) -> dict:
     """Idempotently process a successful Stripe Checkout session:
     - Update the payment_transactions row.
@@ -736,11 +783,19 @@ async def _credit_successful_payment(
         sub_doc = new_subscription_record(
             user_id=user_id, plan_id=plan_id, period_days=int(plan["period_days"])
         )
+        if stripe_subscription_id:
+            sub_doc["stripe_subscription_id"] = stripe_subscription_id
+        if stripe_customer_id:
+            sub_doc["stripe_customer_id"] = stripe_customer_id
         await db.subscriptions.insert_one(sub_doc)
     else:
         ext = extend_subscription(
             existing_sub, plan_id=plan_id, period_days=int(plan["period_days"])
         )
+        if stripe_subscription_id:
+            ext["stripe_subscription_id"] = stripe_subscription_id
+        if stripe_customer_id:
+            ext["stripe_customer_id"] = stripe_customer_id
         await db.subscriptions.update_one({"user_id": user_id}, {"$set": ext})
 
     # Mark txn processed FIRST to lock idempotency
@@ -816,6 +871,52 @@ async def billing_checkout_status(
     if not txn:
         raise HTTPException(status_code=404, detail="Checkout session not found.")
 
+    # Real subscription mode (owner's account) — use raw stripe SDK
+    if subs_billing.is_configured() and (txn.get("metadata") or {}).get("mode") == "subscription":
+        try:
+            session = subs_billing.retrieve_checkout_session(session_id)
+        except Exception as exc:
+            logger.exception("Stripe subscription status fetch failed")
+            raise HTTPException(status_code=502, detail=f"Stripe error: {exc}")
+
+        # Capture customer & subscription IDs on the user record after first payment
+        customer_id = session.customer if isinstance(session.customer, str) else (
+            session.customer.id if session.customer else None
+        )
+        subscription_obj = session.subscription if not isinstance(session.subscription, str) else None
+        subscription_id = (
+            session.subscription if isinstance(session.subscription, str)
+            else (subscription_obj.id if subscription_obj else None)
+        )
+        if customer_id:
+            await db.users.update_one(
+                {"id": current_user.id, "stripe_customer_id": {"$in": [None, ""]}},
+                {"$set": {"stripe_customer_id": customer_id}},
+            )
+
+        summary = await _credit_successful_payment(
+            session_id=session_id,
+            payment_status=session.payment_status or "unpaid",
+            session_status=session.status or "open",
+            amount_total_cents=int(session.amount_total or 0),
+            currency=(session.currency or "usd"),
+            metadata=dict(session.metadata or {}),
+            stripe_subscription_id=subscription_id,
+            stripe_customer_id=customer_id,
+        )
+        return {
+            "session_id": session_id,
+            "status": session.status,
+            "payment_status": session.payment_status,
+            "amount_total": session.amount_total,
+            "currency": session.currency,
+            "plan_id": summary.get("plan_id"),
+            "processed": summary.get("processed", False),
+            "subscription_id": subscription_id,
+            "mode": "subscription",
+        }
+
+    # ---- Fallback: one-time payment via emergentintegrations test key ----
     client = _stripe_client(http_request)
     try:
         status: CheckoutStatusResponse = await client.get_checkout_status(session_id)
@@ -839,24 +940,107 @@ async def billing_checkout_status(
         "currency": status.currency,
         "plan_id": summary.get("plan_id"),
         "processed": summary.get("processed", False),
+        "mode": "payment",
     }
 
 
 @api_router.post("/webhook/stripe")
 async def stripe_webhook(http_request: Request):
-    """Stripe webhook receiver — credits payments idempotently."""
+    """Stripe webhook receiver — credits payments idempotently.
+
+    When STRIPE_SECRET_KEY + STRIPE_WEBHOOK_SECRET are configured, we verify
+    against the owner's real webhook secret and handle:
+      • checkout.session.completed       → first payment, capture subscription_id
+      • invoice.paid                     → recurring renewal (extends pro_until + accrues MRR commission)
+      • customer.subscription.deleted    → cancellation (marks sub inactive)
+
+    Falls back to the emergentintegrations webhook flow for the platform test key.
+    """
     body = await http_request.body()
     signature = http_request.headers.get("Stripe-Signature", "")
+
+    owner_secret = (os.environ.get("STRIPE_WEBHOOK_SECRET") or "").strip()
+    if subs_billing.is_configured() and owner_secret:
+        try:
+            event = subs_billing.verify_webhook(body, signature, owner_secret)
+        except Exception:
+            logger.exception("Owner Stripe webhook verification failed")
+            raise HTTPException(status_code=400, detail="Invalid webhook signature.")
+
+        event_type = event.get("type") if isinstance(event, dict) else event["type"]
+        data_object = event["data"]["object"]
+
+        try:
+            if event_type in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
+                session_id = data_object.get("id")
+                customer_id = data_object.get("customer")
+                subscription_id = data_object.get("subscription")
+                meta = data_object.get("metadata") or {}
+                user_id = meta.get("user_id")
+                if customer_id and user_id:
+                    await db.users.update_one(
+                        {"id": user_id, "stripe_customer_id": {"$in": [None, ""]}},
+                        {"$set": {"stripe_customer_id": customer_id}},
+                    )
+                await _credit_successful_payment(
+                    session_id=session_id,
+                    payment_status=data_object.get("payment_status") or "paid",
+                    session_status=data_object.get("status") or "complete",
+                    amount_total_cents=int(data_object.get("amount_total") or 0),
+                    currency=(data_object.get("currency") or "usd"),
+                    metadata=meta,
+                    stripe_subscription_id=subscription_id,
+                    stripe_customer_id=customer_id,
+                )
+
+            elif event_type == "invoice.paid":
+                # Recurring renewal — billing_reason='subscription_cycle' is the renewal one.
+                # For the first invoice (billing_reason='subscription_create'), the
+                # checkout.session.completed event already credited us. Idempotent guard:
+                # we key off invoice.id so each renewal is processed exactly once.
+                billing_reason = data_object.get("billing_reason")
+                if billing_reason in ("subscription_cycle", "subscription_threshold", "subscription_update"):
+                    await _process_subscription_renewal(
+                        invoice=data_object,
+                    )
+
+            elif event_type == "customer.subscription.deleted":
+                stripe_sub_id = data_object.get("id")
+                if stripe_sub_id:
+                    await db.subscriptions.update_one(
+                        {"stripe_subscription_id": stripe_sub_id},
+                        {"$set": {
+                            "active": False,
+                            "cancelled_at": datetime.now(timezone.utc).isoformat(),
+                            "updated_at": datetime.now(timezone.utc).isoformat(),
+                        }},
+                    )
+
+            elif event_type == "customer.subscription.updated":
+                # Track cancel_at_period_end so the UI can show "Cancels on X"
+                stripe_sub_id = data_object.get("id")
+                if stripe_sub_id:
+                    await db.subscriptions.update_one(
+                        {"stripe_subscription_id": stripe_sub_id},
+                        {"$set": {
+                            "cancel_at_period_end": bool(data_object.get("cancel_at_period_end")),
+                            "stripe_status": data_object.get("status"),
+                            "updated_at": datetime.now(timezone.utc).isoformat(),
+                        }},
+                    )
+        except Exception:
+            logger.exception("Webhook event processing failed (event=%s)", event_type)
+        return {"received": True, "event_type": event_type}
+
+    # ---- Fallback: emergentintegrations webhook handler (test key) ----
     client = _stripe_client(http_request)
     try:
         event = await client.handle_webhook(body, signature)
-    except Exception as exc:
+    except Exception:
         logger.exception("Stripe webhook handling failed")
         raise HTTPException(status_code=400, detail="Invalid webhook payload or signature.")
 
-    # Only credit on completion. Other events update status only.
     if event.event_type in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
-        # Fetch authoritative session to get amount_total
         try:
             status_resp = await client.get_checkout_status(event.session_id)
             await _credit_successful_payment(
@@ -870,6 +1054,123 @@ async def stripe_webhook(http_request: Request):
         except Exception:
             logger.exception("Webhook follow-up status fetch failed")
     return {"received": True, "event_type": event.event_type}
+
+
+async def _process_subscription_renewal(*, invoice: dict) -> None:
+    """Credit a recurring renewal payment.
+
+    Keyed off `invoice.id` for idempotency — we record each invoice once in
+    `payment_transactions` (with `processed=True`) and update the subscription's
+    pro_until + payments_count. Also accrues MRR commission if eligible.
+    """
+    invoice_id = invoice.get("id")
+    if not invoice_id:
+        return
+
+    existing = await db.payment_transactions.find_one({"session_id": invoice_id}, {"_id": 0})
+    if existing and existing.get("processed"):
+        return  # already credited
+
+    customer_id = invoice.get("customer")
+    subscription_id = invoice.get("subscription")
+    amount_paid_cents = int(invoice.get("amount_paid") or 0)
+    currency = invoice.get("currency") or "usd"
+    if amount_paid_cents <= 0 or not customer_id:
+        return
+
+    user_doc = await db.users.find_one({"stripe_customer_id": customer_id}, {"_id": 0})
+    if not user_doc:
+        # Try to find via the existing subscription record
+        sub = await db.subscriptions.find_one(
+            {"stripe_subscription_id": subscription_id}, {"_id": 0}
+        )
+        if not sub:
+            logger.warning("Renewal received for unknown customer/sub: %s / %s",
+                           customer_id, subscription_id)
+            return
+        user_doc = await db.users.find_one({"id": sub["user_id"]}, {"_id": 0})
+        if not user_doc:
+            return
+
+    # Resolve plan from subscription record
+    existing_sub = await db.subscriptions.find_one({"user_id": user_doc["id"]}, {"_id": 0})
+    plan_id = (existing_sub or {}).get("plan_id")
+    plan = get_plan(plan_id) if plan_id else None
+    if not plan:
+        # Fallback: infer from amount
+        amount_dollars = amount_paid_cents / 100.0
+        for pid, p in PLANS.items():
+            if abs(p["amount"] - amount_dollars) < 0.01:
+                plan = p
+                plan_id = pid
+                break
+        if not plan:
+            logger.warning("Renewal — could not resolve plan for invoice %s", invoice_id)
+            return
+
+    # Insert a new transaction row (one per invoice) for the renewal
+    txn = new_transaction_record(
+        session_id=invoice_id,
+        user_id=user_doc["id"],
+        email=user_doc.get("email", ""),
+        plan_id=plan_id,
+        amount=amount_paid_cents / 100.0,
+        currency=currency,
+        metadata={"source": "dlp_subscription_renewal", "mode": "subscription"},
+    )
+    await db.payment_transactions.insert_one(txn)
+
+    await _credit_successful_payment(
+        session_id=invoice_id,
+        payment_status="paid",
+        session_status="complete",
+        amount_total_cents=amount_paid_cents,
+        currency=currency,
+        metadata={"user_id": user_doc["id"], "plan_id": plan_id},
+        stripe_subscription_id=subscription_id,
+        stripe_customer_id=customer_id,
+    )
+
+
+@api_router.post("/billing/portal")
+async def billing_portal(
+    http_request: Request,
+    current_user: User = Depends(get_current_user),
+):
+    """Create a Stripe Customer Portal session so the user can manage their card / cancel."""
+    if not subs_billing.is_configured():
+        raise HTTPException(status_code=400, detail="Customer portal requires the owner Stripe key.")
+    user_doc = await db.users.find_one({"id": current_user.id}, {"_id": 0})
+    customer_id = (user_doc or {}).get("stripe_customer_id")
+    if not customer_id:
+        raise HTTPException(
+            status_code=400,
+            detail="No Stripe customer on file — subscribe to a plan first.",
+        )
+    origin = str(http_request.headers.get("referer") or http_request.base_url).rstrip("/")
+    # Strip query / path back to origin
+    from urllib.parse import urlparse
+    parsed = urlparse(origin)
+    return_url = f"{parsed.scheme}://{parsed.netloc}/billing"
+    try:
+        portal = subs_billing.create_portal_session(
+            stripe_customer_id=customer_id,
+            return_url=return_url,
+        )
+    except Exception as exc:
+        logger.exception("Stripe portal session failed")
+        raise HTTPException(status_code=502, detail=f"Stripe error: {exc}")
+    return {"url": portal.url}
+
+
+@api_router.get("/billing/diagnostics")
+async def billing_diagnostics():
+    """Public-safe diagnostics so the frontend can show LIVE / TEST badges."""
+    return {
+        "subscription_billing_configured": subs_billing.is_configured(),
+        "live_mode": subs_billing.is_live_mode(),
+        "webhook_secret_configured": bool((os.environ.get("STRIPE_WEBHOOK_SECRET") or "").strip()),
+    }
 
 
 # --- COMMISSIONS (affiliate earnings) ---

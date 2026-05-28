@@ -15,6 +15,33 @@ A book publishing / writing application that allows users to upload a Word doc, 
 - Export to real PDF at **all standard KDP trim sizes** + ePub
 - Navy-blue / cream classic publishing aesthetic
 
+## Implemented (as of 2026-02-28) — LIVE STRIPE WIRED UP
+- [x] **True recurring subscriptions** using owner's LIVE Stripe account (`acct_1T9pykLv0zc3PRer`, `besthustlemindset@gmail.com`):
+  - Raw `stripe` Python SDK (v14.4.1) added; new `/app/backend/subscription_billing.py` module.
+  - Products + recurring monthly Prices auto-created in Stripe on first checkout (idempotent via `metadata.dlp_plan_id`).
+  - `mode=subscription` Checkout sessions; Stripe auto-charges every 30 days.
+  - `/api/billing/portal` opens Stripe **Customer Portal** so subscribers can update card / cancel.
+  - `/api/billing/diagnostics` reports `subscription_billing_configured`, `live_mode`, `webhook_secret_configured`.
+  - Frontend: LIVE-mode banner on `/billing`, "Manage subscription" button when active.
+  - Webhook handler now processes:
+    - `checkout.session.completed` → first payment, captures `stripe_customer_id` + `stripe_subscription_id` on the user
+    - `invoice.paid` (billing_reason=`subscription_cycle`) → renewal credits + MRR commission (idempotent per invoice.id)
+    - `customer.subscription.deleted` → marks sub inactive
+    - `customer.subscription.updated` → tracks `cancel_at_period_end`
+  - User model: added `stripe_customer_id` field.
+  - Subscriptions collection: now stores `stripe_subscription_id`, `stripe_customer_id`, `stripe_status`, `cancel_at_period_end`.
+- [x] Backward-compatible: when `STRIPE_SECRET_KEY` is missing, falls back to the original emergentintegrations test-key one-time-payment flow.
+- [x] All 34 billing tests + 14 iter15 regression tests still pass.
+
+## ⚠️ Pending owner action to make live subscriptions FULLY work
+- **STRIPE_WEBHOOK_SECRET** must be set. Without it, recurring monthly renewals won't be auto-credited (the initial subscribe still works because the success page polls the session status).
+- Steps the owner needs to do:
+  1. Stripe Dashboard → Developers → Webhooks → "Add endpoint"
+  2. URL: `https://editorial-studio-19.preview.emergentagent.com/api/webhook/stripe`
+  3. Listen for: `checkout.session.completed`, `invoice.paid`, `customer.subscription.deleted`, `customer.subscription.updated`
+  4. Reveal "Signing secret" (`whsec_...`) and paste it into `STRIPE_WEBHOOK_SECRET` in `/app/backend/.env`
+  5. `sudo supervisorctl restart backend`
+
 ## Implemented (as of 2026-02-27)
 - [x] **Stripe Subscription Billing** (via emergentintegrations Stripe Checkout wrapper with STRIPE_API_KEY=sk_test_emergent):
   - 2 plans defined server-side: **Author Pro** ($19/mo) and **Estate** ($49/mo); each payment grants 30 days of access (extends `pro_until` on the user's `subscriptions` doc).

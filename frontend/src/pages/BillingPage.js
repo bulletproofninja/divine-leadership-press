@@ -6,7 +6,7 @@ import { motion } from 'framer-motion';
 import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
 import {
-  ArrowLeft, Check, Crown, Sparkles, Loader2, CheckCircle2, ShieldCheck,
+  ArrowLeft, Check, Crown, Sparkles, Loader2, CheckCircle2, ShieldCheck, ExternalLink, AlertTriangle,
 } from 'lucide-react';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -49,16 +49,20 @@ export default function BillingPage({ user }) {
   const navigate = useNavigate();
   const [plans, setPlans] = useState([]);
   const [status, setStatus] = useState(null);
+  const [diagnostics, setDiagnostics] = useState(null);
   const [loadingPlanId, setLoadingPlanId] = useState(null);
   const [loadingInitial, setLoadingInitial] = useState(true);
+  const [portalLoading, setPortalLoading] = useState(false);
 
   useEffect(() => {
     Promise.all([
       axios.get(`${API}/billing/plans`),
       axios.get(`${API}/billing/me`, getAuthHeaders()).catch(() => ({ data: null })),
-    ]).then(([plansResp, statusResp]) => {
+      axios.get(`${API}/billing/diagnostics`).catch(() => ({ data: null })),
+    ]).then(([plansResp, statusResp, diagResp]) => {
       setPlans(plansResp.data.plans || []);
       setStatus(statusResp.data || null);
+      setDiagnostics(diagResp.data || null);
     }).catch(() => {
       toast.error('Could not load plans');
     }).finally(() => setLoadingInitial(false));
@@ -80,6 +84,21 @@ export default function BillingPage({ user }) {
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Could not start checkout');
       setLoadingPlanId(null);
+    }
+  };
+
+  const openPortal = async () => {
+    setPortalLoading(true);
+    try {
+      const r = await axios.post(`${API}/billing/portal`, {}, getAuthHeaders());
+      if (r.data?.url) {
+        window.location.href = r.data.url;
+      } else {
+        throw new Error('No portal URL returned');
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Could not open billing portal');
+      setPortalLoading(false);
     }
   };
 
@@ -128,16 +147,57 @@ export default function BillingPage({ user }) {
           {status?.active && (
             <Card
               data-testid="billing-active-card"
-              className="p-5 mb-8 border-l-4 border-l-emerald-500 bg-emerald-50/60 flex items-start gap-3"
+              className="p-5 mb-8 border-l-4 border-l-emerald-500 bg-emerald-50/60 flex flex-col sm:flex-row items-start gap-4"
             >
-              <CheckCircle2 className="h-5 w-5 text-emerald-700 mt-0.5" />
-              <div className="text-sm text-emerald-900">
-                <div className="font-semibold mb-0.5">
-                  You're subscribed — {status.plan_name || status.plan_id}
+              <div className="flex items-start gap-3 flex-1">
+                <CheckCircle2 className="h-5 w-5 text-emerald-700 mt-0.5 flex-shrink-0" />
+                <div className="text-sm text-emerald-900">
+                  <div className="font-semibold mb-0.5">
+                    You're subscribed — {status.plan_name || status.plan_id}
+                  </div>
+                  <p>
+                    Active through <strong>{formatExpiry(status.pro_until)}</strong>.
+                    {status.payments_count > 1 && ` (${status.payments_count} payments on file.)`}
+                  </p>
                 </div>
+              </div>
+              {diagnostics?.subscription_billing_configured && (
+                <Button
+                  data-testid="open-portal-btn"
+                  variant="outline"
+                  size="sm"
+                  onClick={openPortal}
+                  disabled={portalLoading}
+                  className="rounded-sm"
+                >
+                  {portalLoading ? (
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <ExternalLink className="h-4 w-4 mr-2" />
+                  )}
+                  Manage subscription
+                </Button>
+              )}
+            </Card>
+          )}
+
+          {diagnostics?.live_mode && (
+            <Card
+              data-testid="live-mode-banner"
+              className="p-4 mb-8 border-l-4 border-l-rose-500 bg-rose-50/70 flex items-start gap-3"
+            >
+              <AlertTriangle className="h-5 w-5 text-rose-700 mt-0.5 flex-shrink-0" />
+              <div className="text-sm text-rose-900">
+                <div className="font-semibold mb-0.5">Live mode — real cards will be charged.</div>
                 <p>
-                  Active through <strong>{formatExpiry(status.pro_until)}</strong>.
-                  {status.payments_count > 1 && ` (${status.payments_count} payments on file.)`}
+                  This is your production Stripe account. Authors who subscribe will be billed
+                  the listed amount immediately and auto-renewed every 30 days until they cancel
+                  from the customer portal.
+                  {!diagnostics?.webhook_secret_configured && (
+                    <> <strong>Action needed:</strong> add the webhook signing secret
+                    (<code className="font-mono text-xs">STRIPE_WEBHOOK_SECRET</code>) so renewal events get processed.
+                    </>
+                  )}
                 </p>
               </div>
             </Card>
@@ -214,10 +274,10 @@ export default function BillingPage({ user }) {
           </div>
 
           <p className="text-xs text-muted-foreground mt-8 max-w-2xl">
-            Payments are processed by Stripe in test mode. Each payment grants 30 days of access;
-            renewals are charged on the same plan when you re-subscribe.
-            Affiliate commissions accrue automatically per the program rules
-            you can review in the Help page.
+            {diagnostics?.live_mode
+              ? 'Payments are processed live by Stripe and auto-renew every 30 days. Cancel any time from "Manage subscription".'
+              : 'Payments are processed by Stripe in test mode. Each payment grants 30 days of access; renewals are charged on the same plan when you re-subscribe.'}{' '}
+            Affiliate commissions accrue automatically per the program rules you can review in the Help page.
           </p>
         </motion.div>
       </div>
