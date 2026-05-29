@@ -34,6 +34,11 @@ from writing_agent import (
     run_inline_command,
     VOICE_PRESETS,
 )
+from agent_quota import (
+    FREE_DAILY_LIMIT,
+    check_and_charge as agent_check_and_charge,
+    quota_snapshot as agent_quota_snapshot,
+)
 from audio_narrator import (
     list_voices as audio_list_voices,
     narrate_text,
@@ -1790,6 +1795,12 @@ class AgentInlineRequest(BaseModel):
     voice: Optional[str] = "match_my_voice"
 
 
+async def _user_has_active_subscription(user_id: str) -> bool:
+    """True if the user has a paid plan that hasn't expired."""
+    sub = await db.subscriptions.find_one({"user_id": user_id}, {"_id": 0})
+    return is_subscription_active(sub)
+
+
 def _voice_sample_from_doc(doc: dict, max_chars: int = 3000) -> Optional[str]:
     """Pull a representative voice sample from the document for voice-matching."""
     if not doc:
@@ -1823,6 +1834,13 @@ async def list_agent_voices():
     }
 
 
+@api_router.get("/ai/agent/quota")
+async def writing_agent_quota(current_user: User = Depends(get_current_user)):
+    """Read-only quota state so the UI can show 'N of 5 left today'."""
+    active = await _user_has_active_subscription(current_user.id)
+    return await agent_quota_snapshot(db, user_id=current_user.id, subscription_active=active)
+
+
 @api_router.post("/ai/agent/chat")
 async def writing_agent_chat(
     payload: AgentChatRequest,
@@ -1840,6 +1858,27 @@ async def writing_agent_chat(
     )
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
+
+    # Quota gate — subscribers are unlimited; free users get FREE_DAILY_LIMIT/day
+    sub_active = await _user_has_active_subscription(current_user.id)
+    remaining, daily_limit = await agent_check_and_charge(
+        db, user_id=current_user.id, subscription_active=sub_active,
+    )
+    if remaining == -1:
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "code": "agent_quota_exceeded",
+                "message": (
+                    f"You've used all {daily_limit} free agent messages today. "
+                    "Upgrade to Author Pro for unlimited access."
+                ),
+                "limit": daily_limit,
+                "used": daily_limit,
+                "remaining": 0,
+                "resets_at": "midnight UTC",
+            },
+        )
 
     # Load history for this document/session
     session_id = payload.session_id or f"doc-{payload.document_id}"
@@ -1886,7 +1925,16 @@ async def writing_agent_chat(
         upsert=True,
     )
 
-    return {"reply": reply, "session_id": session_id, "history_count": len(new_history)}
+    return {
+        "reply": reply,
+        "session_id": session_id,
+        "history_count": len(new_history),
+        "quota": {
+            "unlimited": daily_limit is None,
+            "remaining": remaining,
+            "limit": daily_limit,
+        },
+    }
 
 
 @api_router.get("/ai/agent/history/{document_id}")
@@ -1928,6 +1976,26 @@ async def writing_agent_inline_command(
     current_user: User = Depends(get_current_user),
 ):
     """Cmd-K behaviour: take selected text + an instruction, return rewritten text."""
+    sub_active = await _user_has_active_subscription(current_user.id)
+    remaining, daily_limit = await agent_check_and_charge(
+        db, user_id=current_user.id, subscription_active=sub_active,
+    )
+    if remaining == -1:
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "code": "agent_quota_exceeded",
+                "message": (
+                    f"You've used all {daily_limit} free agent messages today. "
+                    "Upgrade to Author Pro for unlimited access."
+                ),
+                "limit": daily_limit,
+                "used": daily_limit,
+                "remaining": 0,
+                "resets_at": "midnight UTC",
+            },
+        )
+
     doc = None
     if payload.document_id:
         doc = await db.documents.find_one(
@@ -1947,7 +2015,14 @@ async def writing_agent_inline_command(
     except Exception as exc:
         logger.exception("Inline command failed")
         raise HTTPException(status_code=502, detail=f"Agent error: {exc}")
-    return {"result": result}
+    return {
+        "result": result,
+        "quota": {
+            "unlimited": daily_limit is None,
+            "remaining": remaining,
+            "limit": daily_limit,
+        },
+    }
 
 
 @api_router.get("/ai/tools")

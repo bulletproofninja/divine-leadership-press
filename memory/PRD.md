@@ -15,6 +15,19 @@ A book publishing / writing application that allows users to upload a Word doc, 
 - Export to real PDF at **all standard KDP trim sizes** + ePub
 - Navy-blue / cream classic publishing aesthetic
 
+## Implemented (as of 2026-02-28) — AGENT QUOTA / PAYWALL
+- [x] **Writing agent locked behind Author Pro plan**:
+  - Free users: 5 agent messages/day (chat + Cmd-K combined). Resets at UTC midnight.
+  - Active subscribers (any plan): unlimited.
+  - New `/api/ai/agent/quota` endpoint returns `{unlimited|used|limit|remaining}` for the UI.
+  - Chat + Command endpoints return 402 with `code: "agent_quota_exceeded"` when over limit. Both also include a `quota` block in their success responses so the UI can decrement live.
+  - New `/app/backend/agent_quota.py` module; new `agent_usage` collection (one doc per user per UTC day, atomic `$inc`).
+- [x] **Frontend lock UX**:
+  - Quota pill in the agent header: `3/5 free today` (amber when ≤1 left), or `Unlimited` (emerald) for subscribers.
+  - Full-panel upgrade overlay in `WritingAgentPanel` when quota is exhausted: "You're out of free agent messages today" → "See plans — $19/mo" button → `/billing`.
+  - Same lock card inside `InlineCommandBar` (Cmd-K) so the upsell appears anywhere the agent is invoked.
+  - Pre-flight check: if quota is already at 0 on send, we skip the API call and go straight to the upsell.
+
 ## Implemented (as of 2026-02-28) — AI WRITING AGENT
 - [x] **Conversational writing agent** (`/api/ai/agent/chat`): per-document, per-session persistent chat with Claude Sonnet 4.5. Knows the current manuscript (truncated to ~12k chars) and prior turns (last 20). Voice presets: match_my_voice (default — samples middle of doc), literary, journalistic, conversational, formal_business, poetic, scholarly.
 - [x] **Inline Cmd-K command bar** (`/api/ai/agent/command`): highlight passage → press Ctrl/Cmd-K → type instruction or click a quick chip → preview rewrite → Accept (replaces selection) / Reject / Retry.

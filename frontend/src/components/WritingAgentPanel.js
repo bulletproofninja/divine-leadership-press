@@ -18,7 +18,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '../components/ui/select';
 import {
-  Sparkles, X, Send, Loader2, Trash2, ClipboardCopy, PenLine, BotMessageSquare,
+  Sparkles, X, Send, Loader2, Trash2, ClipboardCopy, PenLine, BotMessageSquare, Lock,
 } from 'lucide-react';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -85,6 +85,8 @@ export default function WritingAgentPanel({
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [quota, setQuota] = useState(null);
+  const [showUpgrade, setShowUpgrade] = useState(false);
   const endRef = useRef(null);
 
   // Load voices + saved history on first mount / when doc changes
@@ -106,6 +108,9 @@ export default function WritingAgentPanel({
       })
       .catch(() => setMessages([]))
       .finally(() => setLoaded(true));
+    axios.get(`${API}/ai/agent/quota`, getAuthHeaders())
+      .then((r) => setQuota(r.data))
+      .catch(() => {});
   }, [documentId]);
 
   useEffect(() => {
@@ -117,6 +122,11 @@ export default function WritingAgentPanel({
   const sendMessage = async (preset) => {
     const text = (preset || input).trim();
     if (!text || sending) return;
+    // Pre-flight: if we already know we're out of quota, show upsell instead of round-tripping
+    if (quota && !quota.unlimited && (quota.remaining ?? 0) <= 0) {
+      setShowUpgrade(true);
+      return;
+    }
     setSending(true);
     const userMsg = { role: 'user', content: text, ts: new Date().toISOString() };
     setMessages((m) => [...m, userMsg]);
@@ -132,8 +142,15 @@ export default function WritingAgentPanel({
         ...m,
         { role: 'assistant', content: reply, ts: new Date().toISOString() },
       ]);
+      if (r.data?.quota) setQuota(r.data.quota);
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Agent did not respond');
+      const status = error.response?.status;
+      if (status === 402) {
+        setShowUpgrade(true);
+        setQuota((q) => ({ ...(q || {}), unlimited: false, remaining: 0, used: 5, limit: 5 }));
+      } else {
+        toast.error(error.response?.data?.detail || 'Agent did not respond');
+      }
       setMessages((m) => m.slice(0, -1));  // roll back the optimistic user message
     } finally {
       setSending(false);
@@ -181,7 +198,7 @@ export default function WritingAgentPanel({
   return (
     <Card
       data-testid="writing-agent-panel"
-      className="fixed right-4 bottom-4 z-40 w-[380px] sm:w-[420px] max-h-[80vh] flex flex-col shadow-2xl border-2 border-primary/30 bg-card/95 backdrop-blur-md rounded-sm"
+      className="fixed right-4 bottom-4 z-40 w-[380px] sm:w-[420px] max-h-[80vh] flex flex-col shadow-2xl border-2 border-primary/30 bg-card/95 backdrop-blur-md rounded-sm overflow-hidden"
     >
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b">
@@ -193,8 +210,28 @@ export default function WritingAgentPanel({
             <div className="text-sm font-heading font-semibold leading-tight">
               Writing Agent
             </div>
-            <div className="text-[10px] uppercase tracking-wider font-mono text-muted-foreground">
+            <div className="text-[10px] uppercase tracking-wider font-mono text-muted-foreground flex items-center gap-1.5">
               Claude · {voice.replace(/_/g, ' ')}
+              {quota && !quota.unlimited && (
+                <span
+                  data-testid="agent-quota-pill"
+                  className={`px-1.5 py-0.5 rounded-sm border ${
+                    (quota.remaining ?? 0) <= 1
+                      ? 'border-amber-400 bg-amber-50 text-amber-800'
+                      : 'border-muted bg-muted/40 text-muted-foreground'
+                  }`}
+                >
+                  {quota.remaining ?? 0}/{quota.limit ?? 5} free today
+                </span>
+              )}
+              {quota?.unlimited && (
+                <span
+                  data-testid="agent-quota-unlimited"
+                  className="px-1.5 py-0.5 rounded-sm border border-emerald-300 bg-emerald-50 text-emerald-800"
+                >
+                  Unlimited
+                </span>
+              )}
             </div>
           </div>
         </div>
@@ -343,6 +380,45 @@ export default function WritingAgentPanel({
           ⌘/Ctrl + Enter to send
         </p>
       </div>
+
+      {/* Upgrade overlay (sub-required after free quota is exhausted) */}
+      {showUpgrade && (
+        <div
+          data-testid="agent-upgrade-overlay"
+          className="absolute inset-0 bg-card/95 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center rounded-sm"
+        >
+          <span className="p-3 rounded-sm bg-primary/10 text-primary mb-3">
+            <Lock className="h-6 w-6" />
+          </span>
+          <h3 className="text-lg font-heading font-semibold mb-1">
+            You're out of free agent messages today.
+          </h3>
+          <p className="text-xs text-muted-foreground mb-5 max-w-xs">
+            Subscribe to <strong>Author Pro</strong> for unlimited writing-agent
+            help (chat &amp; Cmd-K), or come back tomorrow — your free quota resets
+            at midnight UTC.
+          </p>
+          <div className="flex flex-col gap-2 w-full max-w-xs">
+            <Button
+              data-testid="agent-upgrade-cta"
+              size="lg"
+              className="w-full rounded-sm"
+              onClick={() => { window.location.href = '/billing'; }}
+            >
+              <Sparkles className="h-4 w-4 mr-2" /> See plans — $19/mo
+            </Button>
+            <Button
+              data-testid="agent-upgrade-dismiss"
+              variant="ghost"
+              size="sm"
+              className="rounded-sm"
+              onClick={() => setShowUpgrade(false)}
+            >
+              Maybe later
+            </Button>
+          </div>
+        </div>
+      )}
     </Card>
   );
 }

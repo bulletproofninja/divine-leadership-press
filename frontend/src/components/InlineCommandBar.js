@@ -19,7 +19,7 @@ import { toast } from 'sonner';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Card } from '../components/ui/card';
-import { Loader2, Wand2, Check, X, RefreshCw } from 'lucide-react';
+import { Loader2, Wand2, Check, X, RefreshCw, Lock, Sparkles } from 'lucide-react';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -47,12 +47,14 @@ export default function InlineCommandBar({
   const [instruction, setInstruction] = useState('');
   const [result, setResult] = useState('');
   const [loading, setLoading] = useState(false);
+  const [upgradeNeeded, setUpgradeNeeded] = useState(false);
   const inputRef = useRef(null);
 
   useEffect(() => {
     if (open) {
       setInstruction('');
       setResult('');
+      setUpgradeNeeded(false);
       setTimeout(() => inputRef.current?.focus(), 50);
     }
   }, [open]);
@@ -81,7 +83,11 @@ export default function InlineCommandBar({
       );
       setResult(r.data?.result || '');
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Command failed');
+      if (error.response?.status === 402) {
+        setUpgradeNeeded(true);
+      } else {
+        toast.error(error.response?.data?.detail || 'Command failed');
+      }
     } finally {
       setLoading(false);
     }
@@ -122,6 +128,43 @@ export default function InlineCommandBar({
             : 'No text selected — close this and highlight a passage first.'}
         </div>
 
+        {upgradeNeeded ? (
+          <div
+            data-testid="cmdk-upgrade-card"
+            className="text-center py-6 px-3 rounded-sm bg-primary/5 border border-primary/20"
+          >
+            <span className="inline-flex p-2 rounded-sm bg-primary/10 text-primary mb-3">
+              <Lock className="h-5 w-5" />
+            </span>
+            <h3 className="text-base font-heading font-semibold mb-1">
+              You're out of free agent messages today.
+            </h3>
+            <p className="text-xs text-muted-foreground mb-4 max-w-md mx-auto">
+              Subscribe to <strong>Author Pro</strong> for unlimited Cmd-K rewrites,
+              brainstorming, and voice-matched drafts.
+            </p>
+            <div className="flex gap-2 justify-center">
+              <Button
+                data-testid="cmdk-upgrade-cta"
+                size="sm"
+                onClick={() => { window.location.href = '/billing'; }}
+                className="rounded-sm"
+              >
+                <Sparkles className="h-3.5 w-3.5 mr-1.5" /> See plans — $19/mo
+              </Button>
+              <Button
+                data-testid="cmdk-upgrade-dismiss"
+                variant="ghost"
+                size="sm"
+                onClick={onClose}
+                className="rounded-sm"
+              >
+                Close
+              </Button>
+            </div>
+          </div>
+        ) : (
+        <>
         <div className="flex gap-2 mb-3">
           <Input
             ref={inputRef}
@@ -208,6 +251,8 @@ export default function InlineCommandBar({
               </Button>
             </div>
           </div>
+        )}
+        </>
         )}
       </Card>
     </div>
