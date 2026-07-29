@@ -300,7 +300,16 @@ export default function HelpPage() {
               Help & Documentation
             </span>
           </div>
-          <div className="w-20" />
+          <a
+            data-testid="download-user-guide-btn"
+            href="/dlp-user-guide.pdf"
+            download
+            className="inline-flex items-center gap-1.5 h-9 px-3 rounded-sm border text-xs font-body hover:bg-primary hover:text-primary-foreground transition-colors"
+            title="Download the full PDF user guide"
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">PDF Guide</span>
+          </a>
         </div>
       </header>
 
