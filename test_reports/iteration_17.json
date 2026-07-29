@@ -1,0 +1,46 @@
+{
+  "summary": "Full end-to-end audit — PASS. 37/37 iter17 audit tests pass and 34/34 iter16 billing regression tests still pass. Auth, docs CRUD, .docx upload, PDF/EPUB export (with real %PDF and PK magic bytes verified across two trim sizes), AI editor (tighten/clarity/blurb/copyedit + /ai/tools), Writing Agent (7 voices, chat history persist+clear, Cmd-K command), agent quota (5→4→3→2→1→0 then 402 with detail.code='agent_quota_exceeded'; unlimited:true when active subscription in `subscriptions` collection), per-chapter audiobook preview + 400 on 0/1 chapters, affiliate/referral (public settings, leaderboard, admin PUT gated, referred_by wired on register), LIVE Stripe (diagnostics {subscription_billing_configured, live_mode, webhook_secret_configured} all true; /billing/checkout produces real cs_live_ session, inserts payment_transactions row; status is 404 for other users; webhook returns 400 on bad signature; portal returns 400 when no customer on file), Stripe Connect (503 with dashboard.stripe.com hint on onboard, connected:false default, auto-payout 400 on empty ids, 'no_connect_account' in failed[] when referrer lacks account), and every /api/admin/* route 403s for non-super-admins. Frontend smoke: landing loads, login works via bagmoneyceo@gmail.com/Surfwall1, /dashboard renders 3 docs, /billing shows live-mode-banner + author_pro + estate plan cards, /help shows earnings-card + connect-onboard-btn, /editor/{id} shows agent-toggle-btn and the panel opens revealing agent-quota-pill displaying '5/5 FREE TODAY'. No blocking issues found.",
+  "backend_tests_run": "37/37 PASSED in /app/backend/tests/test_iter17_audit.py + 34/34 PASSED regression in /app/backend/tests/test_billing.py.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/documents/{id}/copyedit", "issue": "Response schema is {issues, readability, paragraph_count, style_guide} — not documented in the review_request 'features_or_bugs_to_test'. Fine, just noting for the OpenAPI docs."},
+      {"endpoint": "/api/webhook/stripe", "issue": "On bad signature: 400 body says 'Invalid webhook signature.' when owner secret is configured; but the emergentintegrations fallback path returns 'Invalid webhook payload or signature.' — messages differ. Acceptable but consider unifying."},
+      {"endpoint": "/api/documents/{id}/audiobook/chapters", "issue": "Uses query params for voice/speed while /api/documents/{id}/audiobook uses body — inconsistent, flagged in iter16 too."},
+      {"endpoint": "/api/documents/{id}/export", "issue": "Query-param style POST (?format=pdf&trim=6x9). Review request called for /export/pdf and /export/epub subpaths — current implementation works but consider adding thin route aliases for cleaner URLs."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "DashboardPage document card", "issue": "Third card (Test Manuscript) preview shows raw escaped HTML text like '<h1>Chapter One</h1><p>The wind picked up...</p>' instead of a stripped-plain-text excerpt. Only affects docs whose content lacks stripped preview. Should HTML-strip before rendering the preview.", "selector": "dashboard document card preview", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "LandingPage", "issues": ["No explicit 'Log in' entry point in the header — only 'Start Publishing' / 'Learn More' scroll the page down to reveal the login form. Ok, but a header 'Log in' link would speed up returning users."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter17_audit.py",
+    "/app/test_reports/pytest/iter17_audit.xml",
+    "/app/test_reports/pytest/iter17_billing_regression.xml"
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 2981 lines — well over the 700-line guideline. High recommendation to extract: (a) writing_agent + quota routes into /app/backend/routers/agent.py, (b) billing/stripe/connect routes into /app/backend/routers/billing.py, (c) audiobook routes into /app/backend/routers/audiobook.py. Otherwise every new feature adds cognitive load.",
+    "agent_check_and_charge INCREMENTS the counter BEFORE the LLM call — meaning if the LLM 502s, the user still loses one of their five free calls. Consider incrementing only on success (charge inside a try/finally that rolls back on exception). Currently a user could exhaust their quota via transient upstream errors.",
+    "writing_agent_chat and writing_agent_inline_command duplicate the same quota gate + 402 detail block ~30 lines each. Extract into a small dependency (Depends(check_agent_quota)) that yields the (remaining, limit) tuple.",
+    "STRIPE_API_KEY is still 'sk_test_emergent' in .env (used by the emergentintegrations fallback), but the real Stripe live keys live under STRIPE_SECRET_KEY / STRIPE_WEBHOOK_SECRET. The dual-mode is intentional but confusing — a comment in .env noting 'STRIPE_API_KEY is the emergentintegrations test key; STRIPE_SECRET_KEY drives live subscriptions' would help future maintainers. (Per env rules DO NOT add comments to .env, so document this in /app/backend/README.md instead.)",
+    "chapter_audiobook.export_chapters_zip is fully sequential and holds one HTTP request open for the entire OpenAI TTS pipeline. For any book >5 chapters the request will likely exceed reverse-proxy timeouts. Queue-based background job is required before promoting this to a paid feature.",
+    "Frontend DashboardPage should HTML-strip the document preview before rendering — currently it embeds raw HTML as text for docs whose 'content' starts with tags.",
+    "/api/webhook/stripe: after emergentintegrations verifies the signature it still refetches session status via get_checkout_status — two Stripe round-trips per webhook. Reuse status_resp fields available in the event payload."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter17_audit.py (new — 37 tests across 10 classes)"
+  ],
+  "success_rate": {"backend": "100% (37/37 new + 34/34 regression)", "frontend": "100% smoke"},
+  "test_credentials": "Owner bagmoneyceo@gmail.com / Surfwall1 verified working. Fresh users are registered on the fly with test_iter17_* prefix at @example.com (DLP's EmailStr validator rejects .test TLD).",
+  "seed_data_creation": "Each run registers ~10 fresh test_iter17_* users, inserts ~1 test commissions row that is auto-deleted at test end, and creates ~5 small documents. One test creates a synthetic active subscription doc for the quota test and cleans it up in a finally block. A real cs_live_ Stripe Checkout session and one payment_transactions row are created per run (session is never completed — no real charge occurs).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "The review_request specifies endpoint paths like /api/documents/{id}/export/pdf and /api/ai/tighten which do NOT exist as-written. Actual paths: POST /api/documents/{id}/export?format=pdf|epub&trim=... and POST /api/documents/{id}/ai {tool: 'tighten'|'clarity'|'blurb'|...}. Tests were adapted accordingly. Stripe LIVE mode is active — real Checkout sessions are created (cs_live_...) but no charge unless a card is entered on the Stripe hosted page. Connect is not yet enabled on the owner's Stripe account, so /affiliate/connect/onboard returns HTTP 503 (verified). Agent quota is a UTC-day per-user counter in `agent_usage` collection — resets at midnight UTC. If retesting the '5 then 402' path, use a freshly registered user each time or reset the counter in Mongo.",
+  "rca_of_the_issue": "N/A — comprehensive audit, no bugs blocking release."
+}
