@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { BookOpen, FileText, Download, Globe, Sparkles, Eye, BarChart } from 'lucide-react';
+import { BookOpen, FileText, Download, Globe, Sparkles, Eye, BarChart, FileDown } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -216,6 +216,52 @@ export default function LandingPage({ onLogin }) {
           </motion.div>
         </div>
       </div>
+
+      {/* Footer */}
+      <footer
+        data-testid="landing-footer"
+        className="border-t border-white/10 bg-black/20 backdrop-blur-sm"
+      >
+        <div className="container mx-auto px-4 py-10 max-w-6xl">
+          <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr_auto] gap-6 items-center">
+            <div className="flex items-center gap-3">
+              <img
+                src={LOGO_URL}
+                alt="Divine Leadership Press"
+                className="h-10 w-10 object-contain"
+              />
+              <div>
+                <div className="font-heading text-sm text-white uppercase tracking-[0.18em]">
+                  Divine Leadership Press
+                </div>
+                <div className="text-[10px] font-mono uppercase tracking-widest text-white/60">
+                  Est. 1925 · A Century of Letterpress Craft
+                </div>
+              </div>
+            </div>
+            <div className="text-center sm:text-left text-xs text-white/70 font-body max-w-md sm:ml-6">
+              Before you subscribe — download the full 8-page publisher&rsquo;s user
+              guide covering use cases, market positioning, feature list, FAQ,
+              and troubleshooting.
+            </div>
+            <a
+              data-testid="landing-pdf-guide-btn"
+              href="/dlp-user-guide.pdf"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center justify-center gap-2 h-10 px-4 rounded-sm border border-cream/30 text-cream bg-white/5 hover:bg-white hover:text-primary text-sm font-body transition-colors"
+              style={{ color: '#f5efe0' }}
+            >
+              <FileDown className="h-4 w-4" />
+              Download PDF Guide
+            </a>
+          </div>
+          <div className="mt-8 pt-6 border-t border-white/10 flex flex-col sm:flex-row items-center justify-between gap-3 text-[11px] font-mono uppercase tracking-widest text-white/50">
+            <span>© {new Date().getFullYear()} Divine Leadership Press. All rights reserved.</span>
+            <span>Manuscript to marketplace, in one workroom.</span>
+          </div>
+        </div>
+      </footer>
 
       {/* Auth Modal */}
       {showAuth && (

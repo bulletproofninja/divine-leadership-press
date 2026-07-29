@@ -6,7 +6,7 @@ import { motion } from 'framer-motion';
 import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
 import {
-  ArrowLeft, Check, Crown, Sparkles, Loader2, CheckCircle2, ShieldCheck, ExternalLink, AlertTriangle,
+  ArrowLeft, Check, Crown, Sparkles, Loader2, CheckCircle2, ShieldCheck, ExternalLink, AlertTriangle, FileDown,
 } from 'lucide-react';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -153,7 +153,7 @@ export default function BillingPage({ user }) {
                 <CheckCircle2 className="h-5 w-5 text-emerald-700 mt-0.5 flex-shrink-0" />
                 <div className="text-sm text-emerald-900">
                   <div className="font-semibold mb-0.5">
-                    You're subscribed — {status.plan_name || status.plan_id}
+                    You&rsquo;re subscribed — {status.plan_name || status.plan_id}
                   </div>
                   <p>
                     Active through <strong>{formatExpiry(status.pro_until)}</strong>.
@@ -279,6 +279,35 @@ export default function BillingPage({ user }) {
               : 'Payments are processed by Stripe in test mode. Each payment grants 30 days of access; renewals are charged on the same plan when you re-subscribe.'}{' '}
             Affiliate commissions accrue automatically per the program rules you can review in the Help page.
           </p>
+
+          {/* PDF guide callout — prospects can see the full feature list before subscribing */}
+          <Card
+            data-testid="billing-pdf-guide-card"
+            className="mt-6 p-5 border-l-4 border-l-primary bg-accent/30 flex flex-col sm:flex-row sm:items-center gap-4"
+          >
+            <div className="p-3 rounded-sm bg-primary/10 text-primary flex-shrink-0">
+              <FileDown className="h-5 w-5" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="font-heading font-semibold text-sm mb-0.5">
+                Still weighing it up? Read the full publisher&rsquo;s guide.
+              </div>
+              <p className="text-xs text-muted-foreground font-body">
+                A 6-section PDF walking through what each plan includes, market
+                positioning, FAQs, and troubleshooting — before you spend a cent.
+              </p>
+            </div>
+            <a
+              data-testid="billing-pdf-guide-btn"
+              href="/dlp-user-guide.pdf"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center justify-center gap-2 h-10 px-4 rounded-sm border border-primary text-primary hover:bg-primary hover:text-primary-foreground text-sm font-body transition-colors flex-shrink-0"
+            >
+              <FileDown className="h-4 w-4" />
+              Download PDF Guide
+            </a>
+          </Card>
         </motion.div>
       </div>
     </div>
