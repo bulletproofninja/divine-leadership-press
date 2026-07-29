@@ -51,13 +51,16 @@ async def check_and_charge(
     user_id: str,
     subscription_active: bool,
 ) -> Tuple[Optional[int], Optional[int]]:
-    """Atomically gate + charge a single agent call.
+    """Reserve a slot for a single agent call.
 
     Returns (remaining_after, daily_limit). For subscribers, returns (None, None)
     to signal "unlimited". For free users:
-      - If they're already at/over the limit, raises a quota-exceeded sentinel
-        by returning (-1, FREE_DAILY_LIMIT) so the caller can 402.
-      - Otherwise, increments the counter and returns (remaining_after, limit).
+      - If they're already at/over the limit, returns (-1, FREE_DAILY_LIMIT) so
+        the caller can 402.
+      - Otherwise, INCREMENTS the counter and returns (remaining_after, limit).
+      IMPORTANT: If the downstream LLM call subsequently fails, call
+      `refund_charge()` to roll back the increment so the user doesn't lose a
+      message to a transient upstream error.
     """
     if subscription_active:
         return None, None
@@ -69,6 +72,19 @@ async def check_and_charge(
     new_count = await increment_usage(db, user_id)
     remaining = max(0, FREE_DAILY_LIMIT - new_count)
     return remaining, FREE_DAILY_LIMIT
+
+
+async def refund_charge(db, *, user_id: str, subscription_active: bool) -> None:
+    """Roll back a previous `check_and_charge` when the downstream call failed.
+
+    Subscribers were never charged so this is a no-op for them.
+    """
+    if subscription_active:
+        return
+    await db.agent_usage.update_one(
+        {"user_id": user_id, "date": utc_date_key(), "count": {"$gt": 0}},
+        {"$inc": {"count": -1}},
+    )
 
 
 async def quota_snapshot(

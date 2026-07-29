@@ -409,7 +409,9 @@ export default function Dashboard({ user, onLogout }) {
                   </div>
                   <h3 className="text-lg font-heading font-semibold mb-2 line-clamp-2">{doc.title}</h3>
                   <p className="text-sm text-muted-foreground font-body line-clamp-3 mb-4 flex-1">
-                    {doc.metadata?.description || doc.content || 'No content yet'}
+                    {doc.metadata?.description
+                      || (doc.content ? doc.content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200)
+                                        : 'No content yet')}
                   </p>
                   <div className="flex items-center justify-between text-xs text-muted-foreground pt-4 border-t">
                     <div className="flex items-center gap-1">

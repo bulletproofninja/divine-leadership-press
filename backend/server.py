@@ -37,6 +37,7 @@ from writing_agent import (
 from agent_quota import (
     FREE_DAILY_LIMIT,
     check_and_charge as agent_check_and_charge,
+    refund_charge as agent_refund_charge,
     quota_snapshot as agent_quota_snapshot,
 )
 from audio_narrator import (
@@ -1901,6 +1902,11 @@ async def writing_agent_chat(
             session_id=session_id,
         )
     except Exception as exc:
+        # Roll back the quota increment on upstream failure so users don't
+        # lose a free message to a transient LLM error.
+        await agent_refund_charge(
+            db, user_id=current_user.id, subscription_active=sub_active,
+        )
         logger.exception("Writing agent chat failed")
         raise HTTPException(status_code=502, detail=f"Agent error: {exc}")
 
@@ -2011,8 +2017,15 @@ async def writing_agent_inline_command(
             voice_sample=voice_sample,
         )
     except ValueError as exc:
+        # Bad input — refund the reserved slot and 400.
+        await agent_refund_charge(
+            db, user_id=current_user.id, subscription_active=sub_active,
+        )
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
+        await agent_refund_charge(
+            db, user_id=current_user.id, subscription_active=sub_active,
+        )
         logger.exception("Inline command failed")
         raise HTTPException(status_code=502, detail=f"Agent error: {exc}")
     return {
