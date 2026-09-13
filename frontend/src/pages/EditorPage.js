@@ -45,6 +45,14 @@ const CATEGORY_LABELS = {
   tone: 'Tone',
 };
 
+const COVER_PAPER_TYPES = [
+  { value: 'black_white', label: 'Black ink, white paper' },
+  { value: 'cream', label: 'Black ink, cream paper' },
+  { value: 'groundwood', label: 'Black ink, groundwood paper' },
+  { value: 'standard_color', label: 'Standard color, white paper' },
+  { value: 'premium_color', label: 'Premium color, white paper' },
+];
+
 function VoiceMemoCard({ memo, audioUrl, transcribing, onLoadAudio, onTranscribe, onDelete }) {
   const ts = memo.created_at ? new Date(memo.created_at) : null;
   return (
@@ -234,6 +242,9 @@ export default function EditorPage({ user }) {
   const [uploadingCover, setUploadingCover] = useState(false);
   const [savingMetadata, setSavingMetadata] = useState(false);
   const [downloadingCoverPdf, setDownloadingCoverPdf] = useState(false);
+  const [backCoverFile, setBackCoverFile] = useState(null);
+  const [coverPaperType, setCoverPaperType] = useState('black_white');
+  const [generatingCoverSpread, setGeneratingCoverSpread] = useState(false);
   // Voice Memos
   const [memos, setMemos] = useState([]);
   const [memoRecording, setMemoRecording] = useState(false);
@@ -957,6 +968,45 @@ export default function EditorPage({ user }) {
       toast.error(error.response?.data?.detail || 'Cover PDF generation failed');
     } finally {
       setDownloadingCoverPdf(false);
+    }
+  };
+
+  const downloadCoverSpread = async () => {
+    const pageCount = Number(metadata.page_count || 0);
+    if (!backCoverFile) return toast.error('Choose a back cover image first');
+    if (!Number.isInteger(pageCount) || pageCount < 24 || pageCount > 828) {
+      return toast.error('Enter the final formatted page count, from 24 through 828');
+    }
+    setGeneratingCoverSpread(true);
+    try {
+      const formData = new FormData();
+      formData.append('back_cover', backCoverFile);
+      const query = new URLSearchParams({
+        trim: pdfTrim,
+        page_count: String(pageCount),
+        paper_type: coverPaperType,
+        reserve_barcode: 'true',
+      });
+      const response = await axios.post(
+        `${API}/documents/${documentId}/cover/spread?${query.toString()}`,
+        formData,
+        { ...getAuthHeaders(), responseType: 'blob' },
+      );
+      const blob = new Blob([response.data], { type: 'application/pdf' });
+      const url = window.URL.createObjectURL(blob);
+      const anchor = window.document.createElement('a');
+      anchor.href = url;
+      const safe = (title || 'book').replace(/[^A-Za-z0-9._-]+/g, '_');
+      anchor.download = `${safe}_full_cover_${pdfTrim}.pdf`;
+      window.document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(url);
+      toast.success(`Full cover exported. Spine: ${response.headers['x-spine-width']} inches`);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Full cover generation failed');
+    } finally {
+      setGeneratingCoverSpread(false);
     }
   };
 
@@ -1879,6 +1929,73 @@ export default function EditorPage({ user }) {
                   </div>
                 </div>
               </div>
+
+              {coverPreviewUrl && (
+                <div className="mb-4 rounded-sm border border-primary/20 bg-primary/5 p-3 space-y-3" data-testid="cover-spread-panel">
+                  <div>
+                    <div className="text-xs font-semibold">Paperback Full Cover Studio</div>
+                    <p className="text-[10px] text-muted-foreground mt-1">
+                      Combines the back cover, calculated spine, and front cover into one KDP-ready PDF with 0.125-inch bleed. The white barcode area is reserved automatically.
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <Label className="text-[10px]">Final page count</Label>
+                      <Input
+                        data-testid="cover-page-count-input"
+                        type="number"
+                        min="24"
+                        max="828"
+                        value={metadata.page_count || ''}
+                        onChange={(e) => updateMetadataField('page_count', Number(e.target.value) || null)}
+                        placeholder="200"
+                        className="h-8 rounded-sm text-xs"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-[10px]">Paper and ink</Label>
+                      <Select value={coverPaperType} onValueChange={setCoverPaperType}>
+                        <SelectTrigger data-testid="cover-paper-select" className="h-8 rounded-sm text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {COVER_PAPER_TYPES.map((paper) => (
+                            <SelectItem key={paper.value} value={paper.value} className="text-xs">
+                              {paper.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                  <label className="block">
+                    <span className="text-[10px] font-medium">Back cover artwork</span>
+                    <Input
+                      data-testid="back-cover-input"
+                      type="file"
+                      accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
+                      onChange={(e) => setBackCoverFile(e.target.files?.[0] || null)}
+                      className="mt-1 h-9 rounded-sm text-[10px] file:text-[10px]"
+                    />
+                  </label>
+                  <Button
+                    data-testid="cover-spread-download-btn"
+                    size="sm"
+                    className="w-full rounded-sm text-xs"
+                    onClick={downloadCoverSpread}
+                    disabled={generatingCoverSpread || !backCoverFile}
+                  >
+                    {generatingCoverSpread ? (
+                      <><Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> Building Full Cover</>
+                    ) : (
+                      <><FileDown className="h-3.5 w-3.5 mr-1" /> Export Back, Spine, and Front</>
+                    )}
+                  </Button>
+                  {Number(metadata.page_count) > 0 && Number(metadata.page_count) < 80 && (
+                    <p className="text-[10px] text-amber-700">KDP does not permit spine text below 80 pages. The app will leave the spine unlettered.</p>
+                  )}
+                </div>
+              )}
 
               <Separator className="my-3" />
 

@@ -35,7 +35,7 @@ const PROVIDER_META = {
   },
 };
 
-function KeyCard({ providerKey, hasKey, onSave, onClear, savingKey, clearingKey }) {
+function KeyCard({ providerKey, hasKey, onSave, onClear, onTest, savingKey, clearingKey, testingKey }) {
   const meta = PROVIDER_META[providerKey];
   const [inputKey, setInputKey] = useState('');
   const [editing, setEditing] = useState(false);
@@ -84,7 +84,17 @@ function KeyCard({ providerKey, hasKey, onSave, onClear, savingKey, clearingKey 
       {hasKey && !editing ? (
         <div className="flex items-center gap-2 text-xs text-emerald-800 bg-emerald-50 border rounded-sm p-2">
           <CheckCircle2 className="h-4 w-4 flex-shrink-0" />
-          <span className="flex-1">Key on file — agent calls route through your account.</span>
+          <span className="flex-1">Connected. Agent calls route through your provider account.</span>
+          <Button
+            data-testid={`llm-key-test-${providerKey}`}
+            variant="outline"
+            size="sm"
+            className="h-7 text-xs rounded-sm"
+            onClick={() => onTest(providerKey)}
+            disabled={testingKey === providerKey}
+          >
+            {testingKey === providerKey ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Test'}
+          </Button>
           <Button
             data-testid={`llm-key-replace-${providerKey}`}
             variant="ghost"
@@ -124,7 +134,7 @@ function KeyCard({ providerKey, hasKey, onSave, onClear, savingKey, clearingKey 
             className="rounded-sm"
           >
             {savingKey === providerKey ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Key className="h-3.5 w-3.5 mr-1" />}
-            Save
+            Connect
           </Button>
           {editing && (
             <Button
@@ -148,6 +158,7 @@ export default function SettingsPage({ user, setUser }) {
   const [savingKey, setSavingKey] = useState(null);
   const [clearingKey, setClearingKey] = useState(null);
   const [savingPref, setSavingPref] = useState(false);
+  const [testingKey, setTestingKey] = useState(null);
 
   useEffect(() => {
     axios.get(`${API}/auth/me`, getAuthHeaders())
@@ -191,6 +202,22 @@ export default function SettingsPage({ user, setUser }) {
     }
   };
 
+  const testKey = async (provider) => {
+    setTestingKey(provider);
+    try {
+      const r = await axios.post(
+        `${API}/auth/me/${provider}-key/test`,
+        {},
+        getAuthHeaders(),
+      );
+      if (r.data?.connected) toast.success(`${PROVIDER_META[provider].label} connection verified without generating text`);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Connection test failed');
+    } finally {
+      setTestingKey(null);
+    }
+  };
+
   const setPreferred = async (provider) => {
     setSavingPref(true);
     try {
@@ -226,7 +253,7 @@ export default function SettingsPage({ user, setUser }) {
             <ArrowLeft className="h-4 w-4 mr-2" /> Back
           </Button>
           <span className="font-heading text-sm uppercase tracking-[0.18em] text-primary">
-            Settings — AI Providers
+            Settings: AI Providers
           </span>
           <div className="w-20" />
         </div>
@@ -238,8 +265,8 @@ export default function SettingsPage({ user, setUser }) {
             AI provider keys
           </h1>
           <p className="text-sm text-muted-foreground font-body mb-8 max-w-2xl">
-            Plug in your own OpenAI or Anthropic key and the writing agent (chat +
-            Cmd-K) routes every call through your account — no daily quota, no
+            Connect your OpenAI or Anthropic API key and the writing agent routes
+            every call through your account. There is no DLP daily quota and no
             Author Pro subscription needed. Leave both blank to use the
             DLP-managed key with the free 5 messages/day tier.
           </p>
@@ -289,16 +316,20 @@ export default function SettingsPage({ user, setUser }) {
               hasKey={!!me?.has_anthropic_key}
               onSave={saveKey}
               onClear={clearKey}
+              onTest={testKey}
               savingKey={savingKey}
               clearingKey={clearingKey}
+              testingKey={testingKey}
             />
             <KeyCard
               providerKey="openai"
               hasKey={!!me?.has_openai_key}
               onSave={saveKey}
               onClear={clearKey}
+              onTest={testKey}
               savingKey={savingKey}
               clearingKey={clearingKey}
+              testingKey={testingKey}
             />
           </div>
 

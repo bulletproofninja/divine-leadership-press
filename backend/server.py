@@ -14,6 +14,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 import bcrypt
 import jwt
+import httpx
 
 from exporters import (
     docx_to_html,
@@ -85,6 +86,7 @@ from voice_memos import (
 from object_storage import init_storage as init_object_storage
 from transcription import transcribe_audio
 from image_to_pdf import image_to_pdf
+from cover_spread import calculate_cover_dimensions, generate_cover_spread
 from chapter_audiobook import export_chapters_zip, split_into_chapters
 from billing import (
     PLANS,
@@ -1541,6 +1543,28 @@ class PreferredProviderRequest(BaseModel):
     provider: str  # "openai" | "anthropic"
 
 
+async def _test_llm_provider_key(provider: str, api_key: str) -> dict:
+    """Validate a saved provider key without generating text or spending tokens."""
+    if provider == "openai":
+        url = "https://api.openai.com/v1/models"
+        headers = {"Authorization": f"Bearer {api_key}"}
+    elif provider == "anthropic":
+        url = "https://api.anthropic.com/v1/models?limit=1"
+        headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
+    else:
+        raise HTTPException(status_code=400, detail="Unknown AI provider.")
+    try:
+        async with httpx.AsyncClient(timeout=12.0) as client:
+            response = await client.get(url, headers=headers)
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=503, detail=f"Could not reach {provider.title()}: {exc}")
+    if response.status_code in (401, 403):
+        raise HTTPException(status_code=400, detail=f"{provider.title()} rejected this API key.")
+    if response.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"{provider.title()} connection test returned HTTP {response.status_code}.")
+    return {"connected": True, "provider": provider, "uses_generation_credits": False}
+
+
 def _user_response_from(user: User) -> "UserResponse":
     return UserResponse(
         id=user.id,
@@ -1618,6 +1642,21 @@ async def clear_anthropic_key(current_user: User = Depends(get_current_user)):
     )
     current_user.anthropic_api_key = None
     return _user_response_from(current_user)
+
+
+@api_router.post("/auth/me/{provider}-key/test")
+async def test_saved_llm_key(
+    provider: str,
+    current_user: User = Depends(get_current_user),
+):
+    provider = (provider or "").strip().lower()
+    key = {
+        "openai": current_user.openai_api_key,
+        "anthropic": current_user.anthropic_api_key,
+    }.get(provider)
+    if not key:
+        raise HTTPException(status_code=400, detail=f"Save a {provider.title()} API key first.")
+    return await _test_llm_provider_key(provider, key)
 
 
 @api_router.put("/auth/me/preferred-provider", response_model=UserResponse)
@@ -2766,6 +2805,70 @@ async def remove_cover(
 
 
 # --- COVER PDF (for KDP paperback submission) ---
+
+@api_router.get("/cover/spread/specs")
+async def cover_spread_specs(
+    trim: str = "6x9",
+    page_count: int = 100,
+    paper_type: str = "black_white",
+):
+    try:
+        return calculate_cover_dimensions(trim, page_count, paper_type).to_dict()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@api_router.post("/documents/{document_id}/cover/spread")
+async def document_cover_spread(
+    document_id: str,
+    back_cover: UploadFile = File(...),
+    trim: Optional[str] = None,
+    page_count: Optional[int] = None,
+    paper_type: str = "black_white",
+    reserve_barcode: bool = True,
+    current_user: User = Depends(get_current_user),
+):
+    doc = await db.documents.find_one(
+        {"id": document_id, "user_id": current_user.id}, {"_id": 0}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    front_upload = find_cover_upload(doc)
+    if not front_upload:
+        raise HTTPException(status_code=404, detail="Upload the front cover first.")
+    back_bytes = await back_cover.read()
+    if len(back_bytes) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Back cover image is too large. Maximum size is 20 MB.")
+    metadata = doc.get("metadata") or {}
+    resolved_pages = page_count or metadata.get("page_count")
+    if not resolved_pages:
+        raise HTTPException(status_code=400, detail="Enter the final formatted page count.")
+    trim_key = (trim or doc.get("format") or "6x9").strip()
+    try:
+        pdf_bytes, dimensions = generate_cover_spread(
+            front_image_bytes=fetch_cover_bytes(front_upload["storage_path"]),
+            back_image_bytes=back_bytes,
+            trim_key=trim_key,
+            page_count=int(resolved_pages),
+            paper_type=paper_type,
+            title=doc.get("title") or "Untitled",
+            author=metadata.get("author") or "",
+            reserve_barcode=reserve_barcode,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", doc.get("title") or "book").strip("_") or "book"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_name}_full_cover_{trim_key}.pdf"',
+            "X-Cover-Width": str(dimensions.cover_width),
+            "X-Cover-Height": str(dimensions.cover_height),
+            "X-Spine-Width": str(dimensions.spine_width),
+            "X-Spine-Text": "allowed" if dimensions.spine_text_allowed else "omitted",
+        },
+    )
 
 @api_router.post("/documents/{document_id}/cover/pdf")
 async def cover_to_pdf(
