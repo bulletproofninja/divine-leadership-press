@@ -1314,6 +1314,10 @@ export default function EditorPage({ user }) {
   };
 
   const handlePublish = async (platform) => {
+    if (platform === 'lulu') {
+      navigate(`/publishing?document=${documentId}`);
+      return;
+    }
     try {
       const endpoint = platform === 'kdp' ? '/integrations/kdp' : '/integrations/lulu';
       const response = await axios.post(
@@ -2715,6 +2719,16 @@ export default function EditorPage({ user }) {
                 >
                   <Globe className="h-4 w-4 mr-2" />
                   Prepare for Lulu
+                </Button>
+                <Button
+                  data-testid="publish-ingram-btn"
+                  variant="outline"
+                  size="sm"
+                  className="w-full justify-start rounded-sm"
+                  onClick={() => navigate(`/publishing?document=${documentId}`)}
+                >
+                  <Globe className="h-4 w-4 mr-2" />
+                  Prepare for IngramSpark
                 </Button>
               </div>
             </Card>

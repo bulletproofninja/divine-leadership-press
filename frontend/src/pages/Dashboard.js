@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Plus, FileText, Upload, LogOut, Search, Calendar, File, Trash2, Edit, ImageIcon, BookOpen, FileType, Headphones, HelpCircle, Shield, CreditCard, DollarSign, Settings } from 'lucide-react';
+import { Plus, FileText, Upload, LogOut, Search, Calendar, File, Trash2, Edit, ImageIcon, BookOpen, FileType, Headphones, HelpCircle, Shield, CreditCard, DollarSign, Settings, PackageCheck } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Card } from '../components/ui/card';
@@ -241,6 +241,17 @@ export default function Dashboard({ user, onLogout }) {
             >
               <Settings className="h-4 w-4 sm:mr-1.5" />
               <span className="hidden sm:inline">Settings</span>
+            </Button>
+            <Button
+              data-testid="publishing-link-dashboard"
+              variant="ghost"
+              size="sm"
+              onClick={() => navigate('/publishing')}
+              className="rounded-sm"
+              title="Print and Distribution"
+            >
+              <PackageCheck className="h-4 w-4 sm:mr-1.5" />
+              <span className="hidden sm:inline">Publish</span>
             </Button>
             <Button
               data-testid="billing-link-dashboard"

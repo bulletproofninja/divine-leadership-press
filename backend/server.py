@@ -108,6 +108,7 @@ from emergentintegrations.payments.stripe.checkout import (
 import subscription_billing as subs_billing
 import stripe  # for stripe.error.InvalidRequestError exception handling
 from secrets_vault import decrypt_secret, encrypt_secret
+from fulfillment import PROVIDERS as FULFILLMENT_PROVIDERS, publishing_readiness
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -344,6 +345,20 @@ class DocumentResponse(BaseModel):
 class CommentCreate(BaseModel):
     content: str
     position: Optional[int] = None
+
+
+class FulfillmentOrderCreate(BaseModel):
+    document_id: str
+    provider: str = "lulu"
+    quantity: int = Field(default=1, ge=1, le=5000)
+    recipient_name: str = Field(min_length=2, max_length=120)
+    address_line_1: str = Field(min_length=3, max_length=200)
+    address_line_2: Optional[str] = Field(default=None, max_length=200)
+    city: str = Field(min_length=2, max_length=100)
+    state: str = Field(min_length=2, max_length=100)
+    postal_code: str = Field(min_length=3, max_length=20)
+    country_code: str = Field(default="US", min_length=2, max_length=2)
+    shipping_level: str = "mail"
 
 # --- AUTH HELPERS ---
 
@@ -3225,7 +3240,52 @@ async def export_document(
     raise HTTPException(status_code=400, detail=f"Unsupported export format: {format}")
 
 
-# --- PUBLISHING PARTNER ROUTES (preparation only, not direct API integrations) ---
+# --- PRINT FULFILLMENT AND RETAIL DISTRIBUTION ---
+@api_router.get("/publishing/providers")
+async def list_publishing_providers(current_user: User = Depends(get_current_user)):
+    return {"providers": FULFILLMENT_PROVIDERS}
+
+
+@api_router.get("/publishing/readiness/{document_id}")
+async def get_publishing_readiness(document_id: str, current_user: User = Depends(get_current_user)):
+    doc = await db.documents.find_one({"id": document_id, "user_id": current_user.id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"document_id": document_id, **publishing_readiness(doc)}
+
+
+@api_router.post("/publishing/orders", status_code=201)
+async def create_fulfillment_order(order: FulfillmentOrderCreate, current_user: User = Depends(get_current_user)):
+    if order.provider != "lulu":
+        raise HTTPException(status_code=400, detail="Direct orders currently support Lulu only")
+    if order.shipping_level not in {"mail", "priority", "express"}:
+        raise HTTPException(status_code=400, detail="Unsupported shipping level")
+    doc = await db.documents.find_one({"id": order.document_id, "user_id": current_user.id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    readiness = publishing_readiness(doc)
+    if not readiness["direct_print_ready"]:
+        required = {"manuscript", "author", "cover", "interior_pdf", "title"}
+        missing = [item["label"] for item in readiness["checks"] if not item["complete"] and item["key"] in required]
+        raise HTTPException(status_code=409, detail={"message": "Book is not ready for print ordering", "missing": missing})
+    now = datetime.now(timezone.utc)
+    record = {
+        "id": str(uuid.uuid4()), "user_id": current_user.id, **order.model_dump(),
+        "country_code": order.country_code.upper(), "status": "draft",
+        "provider_order_id": None, "created_at": now, "updated_at": now,
+    }
+    await db.fulfillment_orders.insert_one(record.copy())
+    record.pop("user_id", None)
+    return record
+
+
+@api_router.get("/publishing/orders")
+async def list_fulfillment_orders(current_user: User = Depends(get_current_user)):
+    rows = await db.fulfillment_orders.find({"user_id": current_user.id}, {"_id": 0, "user_id": 0}).sort("created_at", -1).to_list(100)
+    return {"orders": rows}
+
+
+# Preparation routes retained for compatibility with existing clients.
 @api_router.post("/integrations/kdp")
 async def publish_to_kdp(document_id: str, current_user: User = Depends(get_current_user)):
     doc = await db.documents.find_one({"id": document_id, "user_id": current_user.id}, {"_id": 0})
