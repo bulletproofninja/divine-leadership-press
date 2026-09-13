@@ -47,7 +47,7 @@
     "backend": "100% pass on executed assertions (73 passed, 1 skipped in storage-related suites)",
     "frontend": "100% for tested private-vault + responsive flows"
   },
-  "test_credentials": "Used /app/memory/test_credentials.md owner account: bagmoneyceo@gmail.com / Surfwall1 for UI auth. Backend tests used fresh TEST_* users.",
+  "test_credentials": "Used a preconfigured owner test account. Credentials intentionally omitted. Backend tests used fresh TEST_* users.",
   "seed_data_creation": "Created temporary TEST_iter20_* users and documents, including TEST_UI_Private_Vault_* editor document and backend test artifacts.",
   "retest_needed": false,
   "main_agent_can_self_test": true,
