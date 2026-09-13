@@ -30,10 +30,11 @@ next-env.d.ts
 dist/
 dist
 
-# Environment files (comprehensive coverage)
-
+# Environment and credential files
 *token.json*
 *credentials.json*
+**/*credentials*
+memory/test_credentials.md
 
 # Logs and debug files
 npm-debug.log*
@@ -90,18 +91,13 @@ frontend/node_modules/.cache/default-development/9.pack
 frontend/node_modules/.cache/default-development/2.pack
 frontend/node_modules/.cache/default-development/5.pack
 frontend/node_modules/.cache/default-development/10.pack
-frontend/node_modules/.cache/default-development/10.pack
 frontend/node_modules/.cache/default-development/11.pack
 frontend/node_modules/.cache/default-development/13.pack
-frontend/node_modules/.cache/default-development/13.pack
 frontend/node_modules/.cache/default-development/15.pack
-frontend/node_modules/.cache/default-development/15.pack
-frontend/node_modules/.cache/default-development/18.pack
 frontend/node_modules/.cache/default-development/18.pack
 frontend/node_modules/.cache/default-development/20.pack
 frontend/node_modules/.cache/default-development/17.pack
 frontend/node_modules/.cache/default-development/19.pack
-frontend/node_modules/.cache/default-development/24.pack
 frontend/node_modules/.cache/default-development/24.pack
 frontend/node_modules/.cache/default-development/25.pack
 .env
