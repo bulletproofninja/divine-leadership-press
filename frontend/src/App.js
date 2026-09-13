@@ -11,6 +11,7 @@ import BillingPage from './pages/BillingPage';
 import BillingSuccess from './pages/BillingSuccess';
 import AdminCommissionsPage from './pages/AdminCommissionsPage';
 import AffiliateConnectReturn from './pages/AffiliateConnectReturn';
+import SettingsPage from './pages/SettingsPage';
 import { Toaster } from './components/ui/sonner';
 
 function App() {
@@ -138,6 +139,16 @@ function App() {
             element={
               user ? (
                 <AffiliateConnectReturn refreshMode />
+              ) : (
+                <Navigate to="/" replace />
+              )
+            }
+          />
+          <Route
+            path="/settings"
+            element={
+              user ? (
+                <SettingsPage user={user} setUser={setUser} />
               ) : (
                 <Navigate to="/" replace />
               )

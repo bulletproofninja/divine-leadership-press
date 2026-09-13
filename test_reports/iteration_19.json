@@ -1,0 +1,32 @@
+{
+  "summary": "Iteration 19 — verified new ChatGPT (OpenAI) integration + BYO-key routing on top of existing Claude Sonnet 4.5 writing agent. Backend: 9/9 new tests pass (test_iter19_byo_llm.py) covering (a) public GET /api/auth/me/llm-providers returns both providers with correct models/labels and default='anthropic'; (b) GET /api/auth/me exposes has_openai_key/has_anthropic_key/preferred_llm_provider with correct defaults (false/false/'anthropic'); (c) PUT/DELETE /api/auth/me/openai-key + /anthropic-key validate sk- prefix + 20-char min length (400 on short/no-prefix), toggle has_*_key flag on success, and DELETE clears; (d) PUT /api/auth/me/preferred-provider accepts openai|anthropic (200) and rejects 'foo' with 400; (e) BYO OpenAI key inserted directly into Mongo makes /api/ai/agent/chat NOT decrement quota across 3 calls (agent_usage stays at 0, GET /api/ai/agent/quota unchanged) — LLM call itself 502s with fake key which is expected; (f) fresh user with no BYO keys hits /agent/chat successfully via DLP Emergent key, response has byo_key=false, provider='anthropic', model contains 'claude', and quota decrements by 1; (g) resolver logic unit-tested — only openai key + pref=anthropic picks openai (BYO), both keys + pref=anthropic picks anthropic (preferred wins), no keys + pref=openai picks openai on Emergent key with is_byo=false; (h) inline /api/ai/agent/command returns byo_key/provider/model in response and honours same BYO-key routing. Regression: 75/75 baseline (34 test_billing + 37 test_iter17_audit + 4 test_iter18_quota_refund) — 100% GREEN. Frontend smoke: logged in as owner bagmoneyceo@gmail.com, verified data-testid='settings-link-dashboard' visible in Dashboard header, /settings route renders preferred-provider-card + llm-key-card-anthropic + llm-key-card-openai + preferred-provider-anthropic/openai toggle buttons. Screenshot captured shows clean editorial design with both provider cards, save inputs, free-tier callout, and encryption note.",
+  "backend_tests_run": "9/9 PASSED in tests/test_iter19_byo_llm.py. 75/75 PASSED regression (34 billing + 37 iter17 + 4 iter18).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter19_byo_llm.py",
+    "/app/test_reports/pytest/iter19_byo.xml",
+    "/app/test_reports/pytest/iter19_regression.xml",
+    "/app/test_reports/iter19_settings.png"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "resolve_provider_and_key precedence in writing_agent.py works correctly: preferred+own-key > any-own-key > preferred-on-Emergent-key. Note: the docstring says 'BYO key, unlimited' at step 1 and 2 which matches server.py behaviour (is_byo bypasses quota check and refund). Good.",
+    "Key validation on Anthropic key requires 'sk-' prefix + >=20 chars — real Anthropic keys start with 'sk-ant-' so the 'sk-' prefix accepts them, but the validation would also accept an OpenAI-style key in the anthropic slot. Not a security issue (LLM call will fail at Anthropic API), but consider tightening to 'sk-ant-' for anthropic-key endpoint if desired. Non-blocking.",
+    "server.py now 3147 lines — carrying forward iter17/18 recommendation to split into routers/{agent,billing,audiobook,byo_llm}.py. Non-blocking for ship."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter19_byo_llm.py (new — 9 tests)"
+  ],
+  "success_rate": {"backend": "100% (9/9 iter19 + 75/75 regression = 84/84)", "frontend": "100% (all 5 required testids visible)"},
+  "test_credentials": "Owner bagmoneyceo@gmail.com / Surfwall1 (used for frontend smoke). Iter19 backend tests register fresh test_iter19_*@example.com users on the fly.",
+  "seed_data_creation": "Per-run: ~6 fresh test_iter19_* users + docs. Two of them get a fake sk-aaaa... OpenAI key inserted directly into Mongo users collection to simulate BYO — no real API spend.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "The new endpoints live at /api/auth/me/llm-providers (PUBLIC), PUT/DELETE /api/auth/me/openai-key, PUT/DELETE /api/auth/me/anthropic-key, PUT /api/auth/me/preferred-provider. Resolver in writing_agent.py::resolve_provider_and_key returns (provider, model, api_key, is_byo). Both /api/ai/agent/chat and /api/ai/agent/command now include provider+model+byo_key in successful responses. BYO key skips both agent_check_and_charge and agent_refund_charge (the whole quota accounting is bypassed when is_byo=True). Frontend: SettingsPage.js at /settings route, Dashboard header has data-testid='settings-link-dashboard'. Test file /app/backend/tests/test_iter19_byo_llm.py is fully reusable for regression.",
+  "rca_of_the_issue": "N/A — no bugs found. Implementation matches spec exactly."
+}

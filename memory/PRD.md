@@ -15,6 +15,18 @@ A book publishing / writing application that allows users to upload a Word doc, 
 - Export to real PDF at **all standard KDP trim sizes** + ePub
 - Navy-blue / cream classic publishing aesthetic
 
+
+## Implemented (as of 2026-02-13) — EMERGENT OBJECT STORAGE MIGRATION (P0 deploy blocker resolved)
+- [x] All file uploads (book covers, audiobook MP3s, per-paragraph voice memos) migrated from ephemeral pod disk to **Emergent Object Storage**.
+- [x] New `/app/backend/object_storage.py` — thin wrapper around `INTEGRATION_PROXY_URL /objstore/api/v1/storage` (init/put/get) with stale-key auto-refresh.
+- [x] Refactored `audio_uploads.py`, `cover_uploads.py`, `voice_memos.py`: no more `path.write_bytes(...)`. Metadata (storage_path, ext, size, filename) stored inline on the parent document (`audio_upload`, `cover_upload`, `memos[].storage_path`).
+- [x] Server startup calls `init_object_storage()`; deletes are soft (clears the doc reference) since Object Storage has no DELETE API.
+- [x] Verified end-to-end via curl (cover, audio, memos: upload → info → fetch → delete) and the full existing pytest suite (30 passed / 1 skipped).
+
+## Pending (next up)
+- [ ] Add **OpenAI-compatible custom endpoint URL** (Ollama / Groq / LM Studio) to the BYO-key matrix in `/settings` — user asked for Ollama support; only OpenAI + Anthropic BYO keys are exposed today.
+- [ ] Per-chapter audiobook export automation (P2).
+
 ## Implemented (as of 2026-02-28) — AGENT QUOTA / PAYWALL
 - [x] **Writing agent locked behind Author Pro plan**:
   - Free users: 5 agent messages/day (chat + Cmd-K combined). Resets at UTC midnight.

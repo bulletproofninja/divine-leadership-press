@@ -23,8 +23,52 @@ from typing import List, Optional
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 
-MODEL_PROVIDER = "anthropic"
-MODEL_NAME = "claude-sonnet-4-5-20250929"
+# Default provider + model per provider.
+DEFAULT_PROVIDER = "anthropic"
+PROVIDER_DEFAULT_MODEL = {
+    "anthropic": "claude-sonnet-4-5-20250929",
+    "openai":    "gpt-5.4",
+}
+PROVIDER_LABELS = {
+    "anthropic": "Claude (Sonnet 4.5)",
+    "openai":    "ChatGPT (GPT-5.4)",
+}
+
+
+def resolve_provider_and_key(
+    *,
+    preferred_provider: Optional[str],
+    user_openai_key: Optional[str],
+    user_anthropic_key: Optional[str],
+) -> tuple[str, str, str, bool]:
+    """Pick the provider + api_key for a given user request.
+
+    Precedence:
+      1. Explicit user preference (`preferred_provider`) if that provider has a
+         user-supplied key → BYO key, unlimited.
+      2. Any provider the user has a BYO key for → BYO key, unlimited.
+      3. Preferred provider (or default) on the DLP Emergent universal key
+         → subject to quota.
+
+    Returns (provider, model, api_key, is_byo).
+    """
+    emergent_key = os.environ.get("EMERGENT_LLM_KEY", "")
+    keys = {"openai": (user_openai_key or "").strip(), "anthropic": (user_anthropic_key or "").strip()}
+    pref = (preferred_provider or DEFAULT_PROVIDER).lower()
+    if pref not in PROVIDER_DEFAULT_MODEL:
+        pref = DEFAULT_PROVIDER
+
+    # 1. Preferred provider with own key
+    if keys.get(pref):
+        return pref, PROVIDER_DEFAULT_MODEL[pref], keys[pref], True
+
+    # 2. Any provider with own key
+    for prov, key in keys.items():
+        if key:
+            return prov, PROVIDER_DEFAULT_MODEL[prov], key, True
+
+    # 3. Fallback to Emergent key on preferred provider
+    return pref, PROVIDER_DEFAULT_MODEL[pref], emergent_key, False
 
 # Voice presets the writer can choose from.
 VOICE_PRESETS: dict = {
@@ -143,15 +187,22 @@ async def agent_chat(
     voice: Optional[str] = "match_my_voice",
     voice_sample: Optional[str] = None,
     session_id: Optional[str] = None,
+    provider: str = DEFAULT_PROVIDER,
+    model: Optional[str] = None,
+    api_key: Optional[str] = None,
 ) -> str:
     """Send one turn to the writing agent, honouring prior conversation history.
 
     history: list of {role: 'user'|'assistant', content: str}, oldest first.
     Returns the assistant's reply (plain text).
     """
-    api_key = os.environ.get("EMERGENT_LLM_KEY")
-    if not api_key:
-        raise RuntimeError("EMERGENT_LLM_KEY is not configured")
+    resolved_key = (api_key or os.environ.get("EMERGENT_LLM_KEY", "")).strip()
+    if not resolved_key:
+        raise RuntimeError("No LLM API key configured (neither user-supplied nor EMERGENT_LLM_KEY).")
+    resolved_provider = (provider or DEFAULT_PROVIDER).lower()
+    if resolved_provider not in PROVIDER_DEFAULT_MODEL:
+        resolved_provider = DEFAULT_PROVIDER
+    resolved_model = model or PROVIDER_DEFAULT_MODEL[resolved_provider]
 
     document_text = _strip_html(document_html or "")
     system_prompt = _build_system_prompt(
@@ -162,10 +213,10 @@ async def agent_chat(
     )
 
     chat = LlmChat(
-        api_key=api_key,
+        api_key=resolved_key,
         session_id=session_id or f"agent-{uuid.uuid4()}",
         system_message=system_prompt,
-    ).with_model(MODEL_PROVIDER, MODEL_NAME)
+    ).with_model(resolved_provider, resolved_model)
 
     # Replay history as plain context inside the new user message, since the
     # emergentintegrations LlmChat ties session memory to its own session_id.
@@ -211,11 +262,19 @@ async def run_inline_command(
     document_title: Optional[str] = None,
     voice: Optional[str] = "match_my_voice",
     voice_sample: Optional[str] = None,
+    provider: str = DEFAULT_PROVIDER,
+    model: Optional[str] = None,
+    api_key: Optional[str] = None,
 ) -> str:
     """Execute a one-shot Cmd-K instruction against a highlighted passage."""
-    api_key = os.environ.get("EMERGENT_LLM_KEY")
-    if not api_key:
-        raise RuntimeError("EMERGENT_LLM_KEY is not configured")
+    resolved_key = (api_key or os.environ.get("EMERGENT_LLM_KEY", "")).strip()
+    if not resolved_key:
+        raise RuntimeError("No LLM API key configured (neither user-supplied nor EMERGENT_LLM_KEY).")
+    resolved_provider = (provider or DEFAULT_PROVIDER).lower()
+    if resolved_provider not in PROVIDER_DEFAULT_MODEL:
+        resolved_provider = DEFAULT_PROVIDER
+    resolved_model = model or PROVIDER_DEFAULT_MODEL[resolved_provider]
+
     selected_text = (selected_text or "").strip()
     instruction = (instruction or "").strip()
     if not selected_text:
@@ -231,10 +290,10 @@ async def run_inline_command(
     )
 
     chat = LlmChat(
-        api_key=api_key,
+        api_key=resolved_key,
         session_id=f"agent-inline-{uuid.uuid4()}",
         system_message=system_prompt,
-    ).with_model(MODEL_PROVIDER, MODEL_NAME)
+    ).with_model(resolved_provider, resolved_model)
 
     prompt = (
         f"INSTRUCTION: {instruction}\n\n"

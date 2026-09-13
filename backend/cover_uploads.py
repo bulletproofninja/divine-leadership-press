@@ -1,78 +1,25 @@
 """
-Cover image uploads — store per-user, per-document cover art on disk.
-"""
-import os
-import re
-from pathlib import Path
-from typing import Optional, Tuple
+Cover image uploads — per-user, per-document cover art stored in Emergent Object Storage.
 
-UPLOAD_ROOT = Path(os.environ.get("COVER_UPLOAD_DIR", "/app/backend/uploads/covers"))
+Metadata is kept on the parent `documents` record under `cover_upload`:
+    {"storage_path": str, "ext": str, "size": int, "filename": str}
+"""
+import re
+from typing import Optional
+
+from object_storage import APP_NAME, get_object, put_object
 
 ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "webp"}
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
 
 
+def _safe(s: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_-]", "_", s or "")
+
+
 def _safe_ext(filename: str) -> str:
     ext = (filename or "").rsplit(".", 1)[-1].lower() if "." in (filename or "") else ""
     return ext if ext in ALLOWED_EXTENSIONS else ""
-
-
-def _user_dir(user_id: str) -> Path:
-    safe = re.sub(r"[^A-Za-z0-9_-]", "_", user_id)
-    UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
-    d = UPLOAD_ROOT / safe
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def storage_path(user_id: str, document_id: str, ext: str) -> Path:
-    safe_doc = re.sub(r"[^A-Za-z0-9_-]", "_", document_id)
-    return _user_dir(user_id) / f"{safe_doc}.{ext}"
-
-
-def find_existing(user_id: str, document_id: str) -> Optional[Tuple[Path, str]]:
-    safe_user = re.sub(r"[^A-Za-z0-9_-]", "_", user_id)
-    safe_doc = re.sub(r"[^A-Za-z0-9_-]", "_", document_id)
-    user_dir = UPLOAD_ROOT / safe_user
-    if not user_dir.exists():
-        return None
-    for ext in ALLOWED_EXTENSIONS:
-        p = user_dir / f"{safe_doc}.{ext}"
-        if p.exists():
-            return p, ext
-    return None
-
-
-def save_upload(user_id: str, document_id: str, filename: str, data: bytes) -> Tuple[Path, str]:
-    ext = _safe_ext(filename)
-    if not ext:
-        raise ValueError(
-            f"Unsupported image format. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}"
-        )
-    if len(data) > MAX_UPLOAD_BYTES:
-        raise ValueError(f"Cover image too large. Maximum is {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.")
-    if len(data) < 64:
-        raise ValueError("File appears to be empty.")
-    existing = find_existing(user_id, document_id)
-    if existing:
-        try:
-            existing[0].unlink()
-        except FileNotFoundError:
-            pass
-    path = storage_path(user_id, document_id, ext)
-    path.write_bytes(data)
-    return path, ext
-
-
-def delete_existing(user_id: str, document_id: str) -> bool:
-    existing = find_existing(user_id, document_id)
-    if not existing:
-        return False
-    try:
-        existing[0].unlink()
-    except FileNotFoundError:
-        return False
-    return True
 
 
 def media_type_for(ext: str) -> str:
@@ -82,3 +29,38 @@ def media_type_for(ext: str) -> str:
         "png": "image/png",
         "webp": "image/webp",
     }.get(ext, "application/octet-stream")
+
+
+def save_upload(user_id: str, document_id: str, filename: str, data: bytes) -> dict:
+    ext = _safe_ext(filename)
+    if not ext:
+        raise ValueError(
+            f"Unsupported image format. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}"
+        )
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise ValueError(
+            f"Cover image too large. Maximum is {MAX_UPLOAD_BYTES // (1024 * 1024)} MB."
+        )
+    if len(data) < 64:
+        raise ValueError("File appears to be empty.")
+    path = f"{APP_NAME}/covers/{_safe(user_id)}/{_safe(document_id)}.{ext}"
+    result = put_object(path, data, media_type_for(ext))
+    return {
+        "storage_path": result["path"],
+        "ext": ext,
+        "size": int(result.get("size") or len(data)),
+        "filename": f"{_safe(document_id)}.{ext}",
+    }
+
+
+def find_existing(doc: dict) -> Optional[dict]:
+    return (doc or {}).get("cover_upload")
+
+
+def fetch_bytes(storage_path: str) -> bytes:
+    data, _ = get_object(storage_path)
+    return data
+
+
+def delete_existing(doc: dict) -> bool:
+    return bool((doc or {}).get("cover_upload"))

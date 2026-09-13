@@ -33,6 +33,9 @@ from writing_agent import (
     agent_chat,
     run_inline_command,
     VOICE_PRESETS,
+    PROVIDER_LABELS,
+    PROVIDER_DEFAULT_MODEL,
+    resolve_provider_and_key,
 )
 from agent_quota import (
     FREE_DAILY_LIMIT,
@@ -59,6 +62,7 @@ from audio_uploads import (
     save_upload as save_audio_upload,
     find_existing as find_audio_upload,
     delete_existing as delete_audio_upload,
+    fetch_bytes as fetch_audio_bytes,
     media_type_for as audio_media_type,
     ALLOWED_EXTENSIONS as AUDIO_ALLOWED_EXTENSIONS,
 )
@@ -66,6 +70,7 @@ from cover_uploads import (
     save_upload as save_cover_upload,
     find_existing as find_cover_upload,
     delete_existing as delete_cover_upload,
+    fetch_bytes as fetch_cover_bytes,
     media_type_for as cover_media_type,
     ALLOWED_EXTENSIONS as COVER_ALLOWED_EXTENSIONS,
 )
@@ -73,9 +78,11 @@ from voice_memos import (
     save_memo as save_voice_memo,
     find_memo_file,
     delete_memo_file,
+    fetch_bytes as fetch_memo_bytes,
     media_type_for as memo_media_type,
     ALLOWED_EXTENSIONS as MEMO_ALLOWED_EXTENSIONS,
 )
+from object_storage import init_storage as init_object_storage
 from transcription import transcribe_audio
 from image_to_pdf import image_to_pdf
 from chapter_audiobook import export_chapters_zip, split_into_chapters
@@ -141,6 +148,9 @@ class User(BaseModel):
     name: str
     password_hash: str
     elevenlabs_api_key: Optional[str] = None
+    openai_api_key: Optional[str] = None       # BYO — routes chat + Cmd-K through user's own OpenAI key
+    anthropic_api_key: Optional[str] = None    # BYO — routes chat + Cmd-K through user's own Anthropic key
+    preferred_llm_provider: Optional[str] = None  # "openai" | "anthropic" (default anthropic)
     referral_code: Optional[str] = None
     referred_by: Optional[str] = None  # the referral_code of whoever referred this user
     is_super_admin: bool = False  # owner / platform admin
@@ -163,6 +173,9 @@ class UserResponse(BaseModel):
     email: str
     name: str
     has_elevenlabs_key: bool = False
+    has_openai_key: bool = False
+    has_anthropic_key: bool = False
+    preferred_llm_provider: str = "anthropic"
     referral_code: Optional[str] = None
     is_super_admin: bool = False
     created_at: datetime
@@ -250,12 +263,12 @@ def _strip_html_text(html: str) -> str:
 
 def _compute_pipeline_status(doc: dict, user_id: str) -> "PipelineStatus":
     metadata = doc.get("metadata") or {}
-    has_audio_upload = bool(find_audio_upload(user_id, doc.get("id", "")))
+    has_audio_upload = bool(find_audio_upload(doc))
     return PipelineStatus(
         manuscript=len(_strip_html_text(doc.get("content") or "")) >= 50,
         metadata=bool((metadata.get("author") or "").strip())
                   and bool((metadata.get("description") or "").strip()),
-        cover=bool(doc.get("cover_image_ext")) or bool(find_cover_upload(user_id, doc.get("id", ""))),
+        cover=bool(doc.get("cover_image_ext")) or bool(find_cover_upload(doc)),
         pdf=bool(doc.get("last_pdf_export_at")),
         epub=bool(doc.get("last_epub_export_at")),
         audiobook=has_audio_upload or bool(doc.get("last_audio_export_at")),
@@ -398,6 +411,9 @@ async def register(user_data: UserRegister):
         email=user.email,
         name=user.name,
         has_elevenlabs_key=bool(user.elevenlabs_api_key),
+        has_openai_key=bool(user.openai_api_key),
+        has_anthropic_key=bool(user.anthropic_api_key),
+        preferred_llm_provider=(user.preferred_llm_provider or "anthropic"),
         referral_code=user.referral_code,
         is_super_admin=user.is_super_admin,
         created_at=user.created_at
@@ -425,6 +441,9 @@ async def login(credentials: UserLogin):
         email=user.email,
         name=user.name,
         has_elevenlabs_key=bool(user.elevenlabs_api_key),
+        has_openai_key=bool(user.openai_api_key),
+        has_anthropic_key=bool(user.anthropic_api_key),
+        preferred_llm_provider=(user.preferred_llm_provider or "anthropic"),
         referral_code=user.referral_code,
         is_super_admin=user.is_super_admin,
         created_at=user.created_at
@@ -446,6 +465,9 @@ async def get_me(current_user: User = Depends(get_current_user)):
         email=current_user.email,
         name=current_user.name,
         has_elevenlabs_key=bool(current_user.elevenlabs_api_key),
+        has_openai_key=bool(current_user.openai_api_key),
+        has_anthropic_key=bool(current_user.anthropic_api_key),
+        preferred_llm_provider=(current_user.preferred_llm_provider or "anthropic"),
         referral_code=current_user.referral_code,
         is_super_admin=current_user.is_super_admin,
         created_at=current_user.created_at
@@ -1506,6 +1528,109 @@ class ElevenLabsKeyRequest(BaseModel):
     api_key: str
 
 
+class LLMKeyRequest(BaseModel):
+    api_key: str
+
+
+class PreferredProviderRequest(BaseModel):
+    provider: str  # "openai" | "anthropic"
+
+
+def _user_response_from(user: User) -> "UserResponse":
+    return UserResponse(
+        id=user.id,
+        email=user.email,
+        name=user.name,
+        has_elevenlabs_key=bool(user.elevenlabs_api_key),
+        has_openai_key=bool(user.openai_api_key),
+        has_anthropic_key=bool(user.anthropic_api_key),
+        preferred_llm_provider=(user.preferred_llm_provider or "anthropic"),
+        referral_code=user.referral_code,
+        is_super_admin=user.is_super_admin,
+        created_at=user.created_at,
+    )
+
+
+@api_router.get("/auth/me/llm-providers")
+async def list_llm_providers():
+    """Public — the LLM providers the app knows how to route through."""
+    return {
+        "providers": [
+            {"key": "anthropic", "label": PROVIDER_LABELS["anthropic"], "model": PROVIDER_DEFAULT_MODEL["anthropic"]},
+            {"key": "openai",    "label": PROVIDER_LABELS["openai"],    "model": PROVIDER_DEFAULT_MODEL["openai"]},
+        ],
+        "default": "anthropic",
+    }
+
+
+@api_router.put("/auth/me/openai-key", response_model=UserResponse)
+async def set_openai_key(
+    payload: LLMKeyRequest,
+    current_user: User = Depends(get_current_user),
+):
+    key = (payload.api_key or "").strip()
+    if not key or not key.startswith("sk-") or len(key) < 20:
+        raise HTTPException(status_code=400, detail="OpenAI API key looks invalid (expected sk-... at least 20 chars).")
+    await db.users.update_one(
+        {"id": current_user.id},
+        {"$set": {"openai_api_key": key}},
+    )
+    current_user.openai_api_key = key
+    return _user_response_from(current_user)
+
+
+@api_router.delete("/auth/me/openai-key", response_model=UserResponse)
+async def clear_openai_key(current_user: User = Depends(get_current_user)):
+    await db.users.update_one(
+        {"id": current_user.id},
+        {"$unset": {"openai_api_key": ""}},
+    )
+    current_user.openai_api_key = None
+    return _user_response_from(current_user)
+
+
+@api_router.put("/auth/me/anthropic-key", response_model=UserResponse)
+async def set_anthropic_key(
+    payload: LLMKeyRequest,
+    current_user: User = Depends(get_current_user),
+):
+    key = (payload.api_key or "").strip()
+    if not key or not key.startswith("sk-") or len(key) < 20:
+        raise HTTPException(status_code=400, detail="Anthropic API key looks invalid (expected sk-... at least 20 chars).")
+    await db.users.update_one(
+        {"id": current_user.id},
+        {"$set": {"anthropic_api_key": key}},
+    )
+    current_user.anthropic_api_key = key
+    return _user_response_from(current_user)
+
+
+@api_router.delete("/auth/me/anthropic-key", response_model=UserResponse)
+async def clear_anthropic_key(current_user: User = Depends(get_current_user)):
+    await db.users.update_one(
+        {"id": current_user.id},
+        {"$unset": {"anthropic_api_key": ""}},
+    )
+    current_user.anthropic_api_key = None
+    return _user_response_from(current_user)
+
+
+@api_router.put("/auth/me/preferred-provider", response_model=UserResponse)
+async def set_preferred_provider(
+    payload: PreferredProviderRequest,
+    current_user: User = Depends(get_current_user),
+):
+    prov = (payload.provider or "").strip().lower()
+    if prov not in ("openai", "anthropic"):
+        raise HTTPException(status_code=400, detail="Provider must be 'openai' or 'anthropic'.")
+    await db.users.update_one(
+        {"id": current_user.id},
+        {"$set": {"preferred_llm_provider": prov}},
+    )
+    current_user.preferred_llm_provider = prov
+    return _user_response_from(current_user)
+
+
 @api_router.put("/auth/me/elevenlabs-key", response_model=UserResponse)
 async def set_elevenlabs_key(
     payload: ElevenLabsKeyRequest,
@@ -1860,26 +1985,36 @@ async def writing_agent_chat(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    # Quota gate — subscribers are unlimited; free users get FREE_DAILY_LIMIT/day
-    sub_active = await _user_has_active_subscription(current_user.id)
-    remaining, daily_limit = await agent_check_and_charge(
-        db, user_id=current_user.id, subscription_active=sub_active,
+    # Resolve provider + key (BYO bypasses quota entirely)
+    provider, model_name, api_key, is_byo = resolve_provider_and_key(
+        preferred_provider=current_user.preferred_llm_provider,
+        user_openai_key=current_user.openai_api_key,
+        user_anthropic_key=current_user.anthropic_api_key,
     )
-    if remaining == -1:
-        raise HTTPException(
-            status_code=402,
-            detail={
-                "code": "agent_quota_exceeded",
-                "message": (
-                    f"You've used all {daily_limit} free agent messages today. "
-                    "Upgrade to Author Pro for unlimited access."
-                ),
-                "limit": daily_limit,
-                "used": daily_limit,
-                "remaining": 0,
-                "resets_at": "midnight UTC",
-            },
+
+    # Quota gate — only apply when NOT using the user's own key
+    sub_active = await _user_has_active_subscription(current_user.id)
+    if is_byo:
+        remaining, daily_limit = None, None
+    else:
+        remaining, daily_limit = await agent_check_and_charge(
+            db, user_id=current_user.id, subscription_active=sub_active,
         )
+        if remaining == -1:
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "code": "agent_quota_exceeded",
+                    "message": (
+                        f"You've used all {daily_limit} free agent messages today. "
+                        "Upgrade to Author Pro, or plug in your own OpenAI / Anthropic key in Settings."
+                    ),
+                    "limit": daily_limit,
+                    "used": daily_limit,
+                    "remaining": 0,
+                    "resets_at": "midnight UTC",
+                },
+            )
 
     # Load history for this document/session
     session_id = payload.session_id or f"doc-{payload.document_id}"
@@ -1900,13 +2035,17 @@ async def writing_agent_chat(
             voice=payload.voice,
             voice_sample=voice_sample,
             session_id=session_id,
+            provider=provider,
+            model=model_name,
+            api_key=api_key,
         )
     except Exception as exc:
         # Roll back the quota increment on upstream failure so users don't
         # lose a free message to a transient LLM error.
-        await agent_refund_charge(
-            db, user_id=current_user.id, subscription_active=sub_active,
-        )
+        if not is_byo:
+            await agent_refund_charge(
+                db, user_id=current_user.id, subscription_active=sub_active,
+            )
         logger.exception("Writing agent chat failed")
         raise HTTPException(status_code=502, detail=f"Agent error: {exc}")
 
@@ -1935,6 +2074,9 @@ async def writing_agent_chat(
         "reply": reply,
         "session_id": session_id,
         "history_count": len(new_history),
+        "provider": provider,
+        "model": model_name,
+        "byo_key": is_byo,
         "quota": {
             "unlimited": daily_limit is None,
             "remaining": remaining,
@@ -1982,25 +2124,33 @@ async def writing_agent_inline_command(
     current_user: User = Depends(get_current_user),
 ):
     """Cmd-K behaviour: take selected text + an instruction, return rewritten text."""
-    sub_active = await _user_has_active_subscription(current_user.id)
-    remaining, daily_limit = await agent_check_and_charge(
-        db, user_id=current_user.id, subscription_active=sub_active,
+    provider, model_name, api_key, is_byo = resolve_provider_and_key(
+        preferred_provider=current_user.preferred_llm_provider,
+        user_openai_key=current_user.openai_api_key,
+        user_anthropic_key=current_user.anthropic_api_key,
     )
-    if remaining == -1:
-        raise HTTPException(
-            status_code=402,
-            detail={
-                "code": "agent_quota_exceeded",
-                "message": (
-                    f"You've used all {daily_limit} free agent messages today. "
-                    "Upgrade to Author Pro for unlimited access."
-                ),
-                "limit": daily_limit,
-                "used": daily_limit,
-                "remaining": 0,
-                "resets_at": "midnight UTC",
-            },
+    sub_active = await _user_has_active_subscription(current_user.id)
+    if is_byo:
+        remaining, daily_limit = None, None
+    else:
+        remaining, daily_limit = await agent_check_and_charge(
+            db, user_id=current_user.id, subscription_active=sub_active,
         )
+        if remaining == -1:
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "code": "agent_quota_exceeded",
+                    "message": (
+                        f"You've used all {daily_limit} free agent messages today. "
+                        "Upgrade to Author Pro, or plug in your own OpenAI / Anthropic key in Settings."
+                    ),
+                    "limit": daily_limit,
+                    "used": daily_limit,
+                    "remaining": 0,
+                    "resets_at": "midnight UTC",
+                },
+            )
 
     doc = None
     if payload.document_id:
@@ -2015,21 +2165,28 @@ async def writing_agent_inline_command(
             document_title=(doc or {}).get("title"),
             voice=payload.voice,
             voice_sample=voice_sample,
+            provider=provider,
+            model=model_name,
+            api_key=api_key,
         )
     except ValueError as exc:
-        # Bad input — refund the reserved slot and 400.
-        await agent_refund_charge(
-            db, user_id=current_user.id, subscription_active=sub_active,
-        )
+        if not is_byo:
+            await agent_refund_charge(
+                db, user_id=current_user.id, subscription_active=sub_active,
+            )
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
-        await agent_refund_charge(
-            db, user_id=current_user.id, subscription_active=sub_active,
-        )
+        if not is_byo:
+            await agent_refund_charge(
+                db, user_id=current_user.id, subscription_active=sub_active,
+            )
         logger.exception("Inline command failed")
         raise HTTPException(status_code=502, detail=f"Agent error: {exc}")
     return {
         "result": result,
+        "provider": provider,
+        "model": model_name,
+        "byo_key": is_byo,
         "quota": {
             "unlimited": daily_limit is None,
             "remaining": remaining,
@@ -2442,14 +2599,19 @@ async def upload_audiobook(
 
     data = await file.read()
     try:
-        path = save_audio_upload(current_user.id, document_id, file.filename or "audio.mp3", data)
+        upload = save_audio_upload(current_user.id, document_id, file.filename or "audio.mp3", data)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
+    await db.documents.update_one(
+        {"id": document_id},
+        {"$set": {"audio_upload": upload, "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+
     return {
         "document_id": document_id,
-        "filename": path.name,
-        "size_bytes": path.stat().st_size,
+        "filename": upload["filename"],
+        "size_bytes": upload["size"],
         "uploaded": True,
     }
 
@@ -2465,14 +2627,14 @@ async def fetch_audiobook(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    found = find_audio_upload(current_user.id, document_id)
-    if not found:
+    upload = find_audio_upload(doc)
+    if not upload:
         raise HTTPException(status_code=404, detail="No audiobook uploaded for this document.")
-    path, ext = found
+    ext = upload["ext"]
     title = doc.get("title") or "Untitled"
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", title).strip("_") or "audiobook"
     return Response(
-        content=path.read_bytes(),
+        content=fetch_audio_bytes(upload["storage_path"]),
         media_type=audio_media_type(ext),
         headers={"Content-Disposition": f'inline; filename="{safe_name}.{ext}"'},
     )
@@ -2488,7 +2650,12 @@ async def remove_audiobook(
     )
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
-    deleted = delete_audio_upload(current_user.id, document_id)
+    deleted = delete_audio_upload(doc)
+    if deleted:
+        await db.documents.update_one(
+            {"id": document_id},
+            {"$unset": {"audio_upload": ""}, "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
     return {"deleted": deleted}
 
 
@@ -2502,15 +2669,14 @@ async def audiobook_info(
     )
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
-    found = find_audio_upload(current_user.id, document_id)
-    if not found:
+    upload = find_audio_upload(doc)
+    if not upload:
         return {"uploaded": False}
-    path, ext = found
     return {
         "uploaded": True,
-        "filename": path.name,
-        "extension": ext,
-        "size_bytes": path.stat().st_size,
+        "filename": upload["filename"],
+        "extension": upload["ext"],
+        "size_bytes": upload["size"],
     }
 
 
@@ -2530,19 +2696,23 @@ async def upload_cover(
 
     data = await file.read()
     try:
-        path, ext = save_cover_upload(current_user.id, document_id, file.filename or "cover.jpg", data)
+        upload = save_cover_upload(current_user.id, document_id, file.filename or "cover.jpg", data)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
     await db.documents.update_one(
         {"id": document_id},
-        {"$set": {"cover_image_ext": ext, "updated_at": datetime.now(timezone.utc).isoformat()}},
+        {"$set": {
+            "cover_upload": upload,
+            "cover_image_ext": upload["ext"],
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }},
     )
     return {
         "document_id": document_id,
-        "filename": path.name,
-        "extension": ext,
-        "size_bytes": path.stat().st_size,
+        "filename": upload["filename"],
+        "extension": upload["ext"],
+        "size_bytes": upload["size"],
         "uploaded": True,
     }
 
@@ -2557,12 +2727,12 @@ async def fetch_cover(
     )
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
-    found = find_cover_upload(current_user.id, document_id)
-    if not found:
+    upload = find_cover_upload(doc)
+    if not upload:
         raise HTTPException(status_code=404, detail="No cover uploaded for this document.")
-    path, ext = found
+    ext = upload["ext"]
     return Response(
-        content=path.read_bytes(),
+        content=fetch_cover_bytes(upload["storage_path"]),
         media_type=cover_media_type(ext),
         headers={"Cache-Control": "private, max-age=60"},
     )
@@ -2578,11 +2748,14 @@ async def remove_cover(
     )
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
-    deleted = delete_cover_upload(current_user.id, document_id)
+    deleted = delete_cover_upload(doc)
     if deleted:
         await db.documents.update_one(
             {"id": document_id},
-            {"$set": {"cover_image_ext": None, "updated_at": datetime.now(timezone.utc).isoformat()}},
+            {
+                "$unset": {"cover_upload": ""},
+                "$set": {"cover_image_ext": None, "updated_at": datetime.now(timezone.utc).isoformat()},
+            },
         )
     return {"deleted": deleted}
 
@@ -2600,10 +2773,9 @@ async def cover_to_pdf(
     )
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
-    found = find_cover_upload(current_user.id, document_id)
-    if not found:
+    upload = find_cover_upload(doc)
+    if not upload:
         raise HTTPException(status_code=404, detail="No cover image uploaded. Upload a cover first.")
-    path, _ext = found
 
     trim_key = (trim or doc.get("format") or "6x9").strip()
     if trim_key not in KDP_TRIM_SIZES:
@@ -2614,7 +2786,7 @@ async def cover_to_pdf(
 
     try:
         pdf_bytes = image_to_pdf(
-            image_bytes=path.read_bytes(),
+            image_bytes=fetch_cover_bytes(upload["storage_path"]),
             trim_key=trim_key,
             title=f"{title} — Cover",
         )
@@ -2689,7 +2861,7 @@ async def create_voice_memo(
     data = await file.read()
     memo_id = str(uuid.uuid4())
     try:
-        path, ext = save_voice_memo(current_user.id, document_id, memo_id, file.filename or "memo.webm", data)
+        upload = save_voice_memo(current_user.id, document_id, memo_id, file.filename or "memo.webm", data)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -2697,11 +2869,12 @@ async def create_voice_memo(
         id=memo_id,
         title=(title or None),
         paragraph_index=paragraph_index,
-        ext=ext,
-        size_bytes=path.stat().st_size,
+        ext=upload["ext"],
+        size_bytes=upload["size"],
     )
     memo_doc = memo.model_dump()
     memo_doc["created_at"] = memo_doc["created_at"].isoformat()
+    memo_doc["storage_path"] = upload["storage_path"]
 
     await db.documents.update_one(
         {"id": document_id},
@@ -2737,12 +2910,12 @@ async def fetch_voice_memo_audio(
     )
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
-    found = find_memo_file(current_user.id, document_id, memo_id)
-    if not found:
+    memo = find_memo_file(doc, memo_id)
+    if not memo:
         raise HTTPException(status_code=404, detail="Memo audio not found")
-    path, ext = found
+    ext = memo["ext"]
     return Response(
-        content=path.read_bytes(),
+        content=fetch_memo_bytes(memo["storage_path"]),
         media_type=memo_media_type(ext),
         headers={"Cache-Control": "private, max-age=60"},
     )
@@ -2766,14 +2939,14 @@ async def transcribe_voice_memo(
     if memo_record and memo_record.get("transcript"):
         return {"text": memo_record["transcript"], "cached": True}
 
-    found = find_memo_file(current_user.id, document_id, memo_id)
+    found = find_memo_file(doc, memo_id)
     if not found:
         raise HTTPException(status_code=404, detail="Memo audio not found")
-    path, ext = found
+    ext = found["ext"]
 
     try:
         text = await transcribe_audio(
-            data=path.read_bytes(),
+            data=fetch_memo_bytes(found["storage_path"]),
             filename=f"memo.{ext}",
         )
     except ValueError as exc:
@@ -2800,7 +2973,7 @@ async def delete_voice_memo(
     )
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
-    delete_memo_file(current_user.id, document_id, memo_id)
+    delete_memo_file(doc, memo_id)
     result = await db.documents.update_one(
         {"id": document_id},
         {
@@ -2991,3 +3164,11 @@ app.add_middleware(
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()
+
+
+@app.on_event("startup")
+async def _init_storage_on_startup():
+    try:
+        init_object_storage()
+    except Exception as exc:
+        logger.error(f"Object storage init failed at startup: {exc}")
