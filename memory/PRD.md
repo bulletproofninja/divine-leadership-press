@@ -15,6 +15,11 @@ A book publishing / writing application that allows users to upload a Word doc, 
 - Export to real PDF at **all standard KDP trim sizes** + ePub
 - Navy-blue / cream classic publishing aesthetic
 
+## Project Export (2026-09-13)
+- [x] Created a complete downloadable source archive containing the current frontend, backend, assets, dependency manifests, configuration files, tests, and documentation.
+- [x] Included `.gitignore` and GitHub-facing project files while excluding `.git/` repository history, `.emergent/` internals, dependencies, build output, and caches.
+- [x] Included sanitized backend/frontend `.env` files with key names preserved and values blank; removed test credentials and scanned the archive for common secret/token patterns.
+
 
 ## Implemented (as of 2026-02-13) — EMERGENT OBJECT STORAGE MIGRATION (P0 deploy blocker resolved)
 - [x] All file uploads (book covers, audiobook MP3s, per-paragraph voice memos) migrated from ephemeral pod disk to **Emergent Object Storage**.
