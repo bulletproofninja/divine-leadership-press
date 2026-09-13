@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
-import { ArrowLeft, Save, Download, History, MessageSquare, Settings, Eye, Globe, Loader2, FileType, BookOpen, Sparkles, Check, X, ScanSearch, AlertCircle, Lightbulb, FileSearch, Headphones, Play, Pause, ImageIcon, Trash2, Mic, MicOff, FileDown, HelpCircle, Wand2, BotMessageSquare } from 'lucide-react';
+import { ArrowLeft, Save, Download, History, MessageSquare, Settings, Eye, Globe, Loader2, FileType, BookOpen, Sparkles, Check, X, ScanSearch, AlertCircle, Lightbulb, FileSearch, Headphones, Play, Pause, ImageIcon, Trash2, Mic, MicOff, FileDown, HelpCircle, Wand2, BotMessageSquare, LockKeyhole, RefreshCw } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -43,6 +43,26 @@ const CATEGORY_LABELS = {
   consistency: 'Consistency',
   clarity: 'Clarity',
   tone: 'Tone',
+};
+
+const privateFileLabel = (file) => {
+  if (file.category === 'manuscript') return 'Original manuscript';
+  if (file.variant?.startsWith('pdf:')) return `Print PDF · ${file.variant.split(':')[1]}`;
+  if (file.variant === 'epub') return 'Digital edition · ePub';
+  if (file.variant?.startsWith('cover_pdf:')) return `Cover PDF · ${file.variant.split(':')[1]}`;
+  if (file.variant === 'openai') return 'Audiobook · OpenAI';
+  if (file.variant === 'elevenlabs') return 'Audiobook · ElevenLabs';
+  if (file.variant === 'chapters') return 'Chapter audiobook bundle';
+  if (file.variant === 'cover') return 'Cover artwork';
+  if (file.variant === 'uploaded_audiobook') return 'Uploaded audiobook';
+  if (file.variant?.startsWith('voice_memo:')) return 'Voice memo';
+  return 'Private file';
+};
+
+const formatFileSize = (bytes) => {
+  if (!bytes) return '0 KB';
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 };
 
 function VoiceMemoCard({ memo, audioUrl, transcribing, onLoadAudio, onTranscribe, onDelete }) {
@@ -214,6 +234,9 @@ export default function EditorPage({ user }) {
   const [chapterAudiobookLoading, setChapterAudiobookLoading] = useState(false);
   const [chapterPreview, setChapterPreview] = useState(null);
   const [chapterPreviewLoading, setChapterPreviewLoading] = useState(false);
+  const [privateFiles, setPrivateFiles] = useState([]);
+  const [privateFilesLoading, setPrivateFilesLoading] = useState(false);
+  const [privateFileDownloading, setPrivateFileDownloading] = useState(null);
   // ElevenLabs state
   const [hasElevenKey, setHasElevenKey] = useState(false);
   const [elevenKeyInput, setElevenKeyInput] = useState('');
@@ -296,6 +319,7 @@ export default function EditorPage({ user }) {
     loadElevenLabsStatus();
     fetchUploadedInfo();
     fetchMemos();
+    fetchPrivateFiles();
   }, [documentId]);
 
   const fetchTrimSizes = async () => {
@@ -338,6 +362,44 @@ export default function EditorPage({ user }) {
       navigate('/dashboard');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchPrivateFiles = async () => {
+    setPrivateFilesLoading(true);
+    try {
+      const response = await axios.get(
+        `${API}/documents/${documentId}/files`,
+        getAuthHeaders()
+      );
+      setPrivateFiles(response.data || []);
+    } catch (_) {
+      setPrivateFiles([]);
+    } finally {
+      setPrivateFilesLoading(false);
+    }
+  };
+
+  const downloadPrivateFile = async (file) => {
+    setPrivateFileDownloading(file.id);
+    try {
+      const response = await axios.get(
+        `${API}/documents/${documentId}/files/${file.id}`,
+        { ...getAuthHeaders(), responseType: 'blob' }
+      );
+      const url = window.URL.createObjectURL(response.data);
+      const link = window.document.createElement('a');
+      link.href = url;
+      link.download = file.filename;
+      window.document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      toast.success(`${file.filename} downloaded`);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Private file download failed');
+    } finally {
+      setPrivateFileDownloading(null);
     }
   };
 
@@ -414,6 +476,7 @@ export default function EditorPage({ user }) {
       a.click();
       a.remove();
       window.URL.revokeObjectURL(url);
+      fetchPrivateFiles();
       toast.success(`Exported ${format.toUpperCase()}${format === 'pdf' ? ` (${trim || pdfTrim})` : ''}`);
     } catch (error) {
       toast.error('Export failed');
@@ -705,6 +768,7 @@ export default function EditorPage({ user }) {
       a.click();
       a.remove();
       window.URL.revokeObjectURL(url);
+      fetchPrivateFiles();
       toast.success('ElevenLabs audiobook downloaded');
     } catch (error) {
       const detail = error.response?.data?.detail || 'ElevenLabs audiobook failed';
@@ -747,6 +811,7 @@ export default function EditorPage({ user }) {
       });
       toast.success('Audiobook uploaded');
       fetchUploadedInfo();
+      fetchPrivateFiles();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Upload failed', { duration: 7000 });
     } finally {
@@ -759,6 +824,7 @@ export default function EditorPage({ user }) {
       await axios.delete(`${API}/documents/${documentId}/audiobook`, getAuthHeaders());
       toast.success('Uploaded audiobook removed');
       setUploadedAudiobookInfo({ uploaded: false });
+      fetchPrivateFiles();
       if (uploadedPlayerUrl) {
         window.URL.revokeObjectURL(uploadedPlayerUrl);
         setUploadedPlayerUrl(null);
@@ -809,6 +875,7 @@ export default function EditorPage({ user }) {
       a.click();
       a.remove();
       window.URL.revokeObjectURL(url);
+      fetchPrivateFiles();
       toast.success(`Audiobook generated — ${ttsVoice} @ ${ttsSpeed}×`);
     } catch (error) {
       const detail = error.response?.data?.detail
@@ -852,6 +919,7 @@ export default function EditorPage({ user }) {
       a.click();
       a.remove();
       window.URL.revokeObjectURL(url);
+      fetchPrivateFiles();
       toast.success('Per-chapter audiobook downloaded');
     } catch (error) {
       const detail = error.response?.data?.detail || 'Per-chapter export failed';
@@ -917,6 +985,7 @@ export default function EditorPage({ user }) {
       });
       toast.success('Cover uploaded');
       fetchDocument();
+      fetchPrivateFiles();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Cover upload failed', { duration: 7000 });
     } finally {
@@ -929,6 +998,7 @@ export default function EditorPage({ user }) {
       await axios.delete(`${API}/documents/${documentId}/cover`, getAuthHeaders());
       toast.success('Cover removed');
       fetchDocument();
+      fetchPrivateFiles();
     } catch (_) {
       toast.error('Could not remove cover');
     }
@@ -952,6 +1022,7 @@ export default function EditorPage({ user }) {
       a.click();
       a.remove();
       window.URL.revokeObjectURL(url);
+      fetchPrivateFiles();
       toast.success(`Cover PDF downloaded (${pdfTrim})`);
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Cover PDF generation failed');
@@ -1183,6 +1254,7 @@ export default function EditorPage({ user }) {
           );
           toast.success('Voice memo saved');
           setMemos((prev) => [r.data, ...prev]);
+          fetchPrivateFiles();
         } catch (error) {
           toast.error(error.response?.data?.detail || 'Could not save memo');
         } finally {
@@ -1257,6 +1329,7 @@ export default function EditorPage({ user }) {
         });
       }
       setMemos((prev) => prev.filter((m) => m.id !== memo.id));
+      fetchPrivateFiles();
       toast.success('Memo deleted');
     } catch (_) {
       toast.error('Could not delete memo');
@@ -1320,8 +1393,8 @@ export default function EditorPage({ user }) {
     <div className="min-h-screen bg-background">
       {/* Header */}
       <header className="sticky top-0 z-40 border-b bg-card/95 backdrop-blur-md">
-        <div className="container mx-auto px-4 py-3 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3 flex-1 min-w-0">
+        <div className="container mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2 flex-1 min-w-0 basis-full md:basis-auto">
             <Button
               data-testid="back-to-dashboard-btn"
               variant="ghost"
@@ -1339,7 +1412,7 @@ export default function EditorPage({ user }) {
               className="font-heading text-lg font-semibold border-0 focus-visible:ring-0 px-2"
             />
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center justify-end gap-2 flex-wrap w-full md:w-auto min-w-0">
             <Button
               data-testid="help-link-editor"
               variant="ghost"
@@ -1427,17 +1500,17 @@ export default function EditorPage({ user }) {
       </header>
 
       <div className="container mx-auto px-4 py-6 max-w-7xl">
-        <div className="grid lg:grid-cols-[1fr,320px] gap-6">
+        <div className="grid lg:grid-cols-[minmax(0,1fr),320px] gap-6 min-w-0">
           {/* Main Editor Area */}
-          <div className="space-y-4">
+          <div className="space-y-4 min-w-0">
             {/* Formatting Toolbar */}
             <Card data-testid="formatting-toolbar" className="p-4 bg-card/50 backdrop-blur-sm">
-              <div className="flex items-center justify-between gap-4 flex-wrap">
-                <div className="flex items-center gap-4">
-                  <div className="flex items-center gap-2">
+              <div className="flex items-center justify-between gap-4 flex-wrap min-w-0">
+                <div className="flex items-center gap-4 flex-wrap min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap min-w-0">
                     <Label className="text-sm font-medium whitespace-nowrap">Style Template:</Label>
                     <Select value={styleTemplate} onValueChange={setStyleTemplate}>
-                      <SelectTrigger data-testid="style-template-select" className="w-[180px] rounded-sm">
+                      <SelectTrigger data-testid="style-template-select" className="w-full min-w-0 sm:w-[180px] rounded-sm">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -1464,7 +1537,7 @@ export default function EditorPage({ user }) {
                     </Label>
                   </div>
                 </div>
-                <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                <div className="flex items-center gap-4 text-sm text-muted-foreground flex-wrap">
                   <span data-testid="word-count">Words: <strong className="text-foreground">{wordCount}</strong></span>
                   <span>Characters: <strong className="text-foreground">{content.replace(/<[^>]*>/g, '').length}</strong></span>
                 </div>
@@ -1505,7 +1578,7 @@ export default function EditorPage({ user }) {
           </div>
 
           {/* Sidebar */}
-          <div className="space-y-4">
+          <div className="space-y-4 min-w-0">
             <Card data-testid="sidebar-panel" className="p-4 bg-card/50 backdrop-blur-sm">
               <Tabs value={activeTab} onValueChange={setActiveTab}>
                 <TabsList className="grid w-full grid-cols-3">
@@ -1694,6 +1767,75 @@ export default function EditorPage({ user }) {
               </Card>
             )}
 
+            <Card data-testid="private-file-vault" className="p-4 bg-card/50 backdrop-blur-sm">
+              <div className="flex items-center justify-between gap-3 mb-2">
+                <h3 className="text-sm font-heading font-semibold flex items-center gap-2">
+                  <LockKeyhole className="h-4 w-4 text-primary" />
+                  Private File Vault
+                </h3>
+                <Button
+                  data-testid="private-files-refresh-button"
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 w-7 p-0 rounded-sm"
+                  onClick={fetchPrivateFiles}
+                  disabled={privateFilesLoading}
+                  title="Refresh private files"
+                  aria-label="Refresh private files"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${privateFilesLoading ? 'animate-spin' : ''}`} />
+                </Button>
+              </div>
+              <p data-testid="private-file-vault-status" className="text-[11px] text-muted-foreground mb-3 font-body">
+                {privateFiles.length} privately stored file{privateFiles.length === 1 ? '' : 's'} · downloads require your account.
+              </p>
+              {privateFilesLoading && privateFiles.length === 0 ? (
+                <div data-testid="private-files-loading" className="py-4 flex items-center justify-center text-xs text-muted-foreground">
+                  <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" /> Loading files…
+                </div>
+              ) : privateFiles.length === 0 ? (
+                <p data-testid="private-files-empty" className="py-3 text-[11px] text-muted-foreground italic text-center">
+                  Upload a manuscript or generate an export to begin.
+                </p>
+              ) : (
+                <div data-testid="private-files-list" className="divide-y border-y max-h-72 overflow-y-auto">
+                  {privateFiles.map((file) => (
+                    <div
+                      key={file.id}
+                      data-testid={`private-file-row-${file.id}`}
+                      className="py-2 flex items-center gap-2"
+                    >
+                      <FileType className="h-4 w-4 text-primary flex-shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <div data-testid={`private-file-name-${file.id}`} className="text-[11px] font-medium truncate" title={file.filename}>
+                          {file.filename}
+                        </div>
+                        <div data-testid={`private-file-meta-${file.id}`} className="text-[10px] text-muted-foreground truncate">
+                          {privateFileLabel(file)} · {formatFileSize(file.size_bytes)}
+                        </div>
+                      </div>
+                      <Button
+                        data-testid={`private-file-download-${file.id}`}
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 w-7 p-0 rounded-sm flex-shrink-0"
+                        onClick={() => downloadPrivateFile(file)}
+                        disabled={privateFileDownloading === file.id}
+                        title={`Download ${file.filename}`}
+                        aria-label={`Download ${file.filename}`}
+                      >
+                        {privateFileDownloading === file.id
+                          ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          : <Download className="h-3.5 w-3.5" />}
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+
             {/* Voice Memos */}
             <Card data-testid="voice-memos-panel" className="p-4 bg-card/50 backdrop-blur-sm">
               <h3 className="text-sm font-heading font-semibold mb-2 flex items-center gap-2">
@@ -1837,6 +1979,7 @@ export default function EditorPage({ user }) {
                         onChange={(e) => uploadCoverFile(e.target.files?.[0])}
                       />
                       <Button
+                        data-testid="cover-upload-button"
                         size="sm"
                         variant="outline"
                         className="w-full rounded-sm text-xs"

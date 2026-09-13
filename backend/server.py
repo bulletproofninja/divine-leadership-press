@@ -83,6 +83,14 @@ from voice_memos import (
     ALLOWED_EXTENSIONS as MEMO_ALLOWED_EXTENSIONS,
 )
 from object_storage import init_storage as init_object_storage
+from private_file_storage import (
+    MAX_MANUSCRIPT_BYTES,
+    build_private_file_record,
+    fetch_private_file,
+    manuscript_content_type,
+    safe_download_name,
+    store_private_file,
+)
 from transcription import transcribe_audio
 from image_to_pdf import image_to_pdf
 from chapter_audiobook import export_chapters_zip, split_into_chapters
@@ -223,6 +231,18 @@ class VoiceMemo(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class StoredFileResponse(BaseModel):
+    id: str
+    document_id: str
+    category: str
+    variant: str
+    filename: str
+    content_type: str
+    size_bytes: int
+    created_at: datetime
+    updated_at: datetime
+
+
 class DocumentModel(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -335,6 +355,161 @@ class DocumentResponse(BaseModel):
     version_count: int
     comment_count: int
     pipeline_status: Optional[PipelineStatus] = None
+
+
+async def _upsert_private_file_record(record: dict) -> StoredFileResponse:
+    existing = await db.document_files.find_one(
+        {
+            "user_id": record["user_id"],
+            "document_id": record["document_id"],
+            "category": record["category"],
+            "variant": record["variant"],
+            "is_deleted": False,
+        },
+        {"_id": 0},
+    )
+    clean_record = {**record}
+    if existing:
+        clean_record["id"] = existing["id"]
+        clean_record["created_at"] = existing.get("created_at") or clean_record["created_at"]
+        await db.document_files.update_one(
+            {"id": existing["id"], "user_id": record["user_id"]},
+            {"$set": {k: v for k, v in clean_record.items() if k != "id"}},
+        )
+    else:
+        await db.document_files.insert_one({**clean_record})
+    return StoredFileResponse(**clean_record)
+
+
+async def _store_document_bytes(
+    *,
+    user_id: str,
+    document_id: str,
+    category: str,
+    variant: str,
+    filename: str,
+    data: bytes,
+    content_type: str,
+) -> StoredFileResponse:
+    existing = await db.document_files.find_one(
+        {
+            "user_id": user_id,
+            "document_id": document_id,
+            "category": category,
+            "variant": variant,
+            "is_deleted": False,
+        },
+        {"_id": 0},
+    )
+    try:
+        record = await asyncio.to_thread(
+            store_private_file,
+            user_id=user_id,
+            document_id=document_id,
+            category=category,
+            variant=variant,
+            filename=filename,
+            data=data,
+            content_type=content_type,
+            storage_path=existing.get("storage_path") if existing else None,
+            record_id=existing.get("id") if existing else None,
+            created_at=existing.get("created_at") if existing else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:
+        logger.exception("Private file storage failed")
+        raise HTTPException(status_code=502, detail="Private file storage is temporarily unavailable.")
+    return await _upsert_private_file_record(record)
+
+
+async def _register_existing_private_file(
+    *,
+    user_id: str,
+    document_id: str,
+    category: str,
+    variant: str,
+    filename: str,
+    content_type: str,
+    size_bytes: int,
+    storage_path: str,
+    created_at: Optional[str] = None,
+) -> StoredFileResponse:
+    existing = await db.document_files.find_one(
+        {
+            "user_id": user_id,
+            "document_id": document_id,
+            "category": category,
+            "variant": variant,
+            "is_deleted": False,
+        },
+        {"_id": 0},
+    )
+    if (
+        existing
+        and existing.get("storage_path") == storage_path
+        and existing.get("filename") == safe_download_name(filename)
+        and existing.get("content_type") == content_type
+        and int(existing.get("size_bytes") or 0) == int(size_bytes)
+    ):
+        return StoredFileResponse(**existing)
+    record = build_private_file_record(
+        user_id=user_id,
+        document_id=document_id,
+        category=category,
+        variant=variant,
+        filename=filename,
+        content_type=content_type,
+        size_bytes=size_bytes,
+        storage_path=storage_path,
+        created_at=created_at,
+    )
+    return await _upsert_private_file_record(record)
+
+
+async def _backfill_attached_media_records(doc: dict, user_id: str) -> None:
+    document_id = doc["id"]
+    cover = find_cover_upload(doc)
+    if cover and cover.get("storage_path"):
+        await _register_existing_private_file(
+            user_id=user_id,
+            document_id=document_id,
+            category="media",
+            variant="cover",
+            filename=cover.get("filename") or f"cover.{cover.get('ext', 'bin')}",
+            content_type=cover_media_type(cover.get("ext", "")),
+            size_bytes=cover.get("size") or 0,
+            storage_path=cover["storage_path"],
+            created_at=doc.get("updated_at"),
+        )
+    audiobook = find_audio_upload(doc)
+    if audiobook and audiobook.get("storage_path"):
+        await _register_existing_private_file(
+            user_id=user_id,
+            document_id=document_id,
+            category="media",
+            variant="uploaded_audiobook",
+            filename=audiobook.get("filename") or f"audiobook.{audiobook.get('ext', 'bin')}",
+            content_type=audio_media_type(audiobook.get("ext", "")),
+            size_bytes=audiobook.get("size") or 0,
+            storage_path=audiobook["storage_path"],
+            created_at=doc.get("updated_at"),
+        )
+    for memo in doc.get("memos") or []:
+        if not memo.get("storage_path"):
+            continue
+        ext = memo.get("ext") or "bin"
+        await _register_existing_private_file(
+            user_id=user_id,
+            document_id=document_id,
+            category="media",
+            variant=f"voice_memo:{memo.get('id')}",
+            filename=f"voice_memo_{memo.get('id')}.{ext}",
+            content_type=memo_media_type(ext),
+            size_bytes=memo.get("size_bytes") or 0,
+            storage_path=memo["storage_path"],
+            created_at=memo.get("created_at"),
+        )
 
 class CommentCreate(BaseModel):
     content: str
@@ -1756,6 +1931,11 @@ async def delete_document(document_id: str, current_user: User = Depends(get_cur
     result = await db.documents.delete_one({"id": document_id, "user_id": current_user.id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Document not found")
+    now = datetime.now(timezone.utc).isoformat()
+    await db.document_files.update_many(
+        {"document_id": document_id, "user_id": current_user.id, "is_deleted": False},
+        {"$set": {"is_deleted": True, "deleted_at": now, "updated_at": now}},
+    )
     return {"message": "Document deleted"}
 
 # --- UPLOAD ROUTE ---
@@ -1775,14 +1955,22 @@ async def upload_document(file: UploadFile = File(...), current_user: User = Dep
             ),
         )
 
-    if lower.endswith(".docx"):
+    if lower.endswith((".docx", ".txt")):
         file_bytes = await file.read()
+        if len(file_bytes) > MAX_MANUSCRIPT_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Manuscript is too large. Maximum is {MAX_MANUSCRIPT_BYTES // (1024 * 1024)} MB.",
+            )
+        if not file_bytes:
+            raise HTTPException(status_code=400, detail="Manuscript file is empty.")
+
+    if lower.endswith(".docx"):
         try:
             content = docx_to_html(file_bytes)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Could not parse .docx file: {exc}")
     elif lower.endswith(".txt"):
-        file_bytes = await file.read()
         try:
             raw = file_bytes.decode("utf-8")
         except UnicodeDecodeError:
@@ -1822,8 +2010,79 @@ async def upload_document(file: UploadFile = File(...), current_user: User = Dep
 
     await db.documents.insert_one(doc)
 
+    try:
+        await _store_document_bytes(
+            user_id=current_user.id,
+            document_id=document.id,
+            category="manuscript",
+            variant="original",
+            filename=filename,
+            data=file_bytes,
+            content_type=manuscript_content_type(filename),
+        )
+    except HTTPException:
+        await db.documents.delete_one({"id": document.id, "user_id": current_user.id})
+        raise
+
     fresh = await db.documents.find_one({"id": document.id}, {"_id": 0})
     return _build_document_response(fresh, current_user.id)
+
+
+@api_router.get("/documents/{document_id}/files", response_model=List[StoredFileResponse])
+async def list_private_document_files(
+    document_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    doc = await db.documents.find_one(
+        {"id": document_id, "user_id": current_user.id}, {"_id": 0}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    await _backfill_attached_media_records(doc, current_user.id)
+    records = await db.document_files.find(
+        {
+            "document_id": document_id,
+            "user_id": current_user.id,
+            "is_deleted": False,
+        },
+        {"_id": 0, "storage_path": 0, "user_id": 0, "is_deleted": 0},
+    ).sort("updated_at", -1).to_list(500)
+    return [StoredFileResponse(**record) for record in records]
+
+
+@api_router.get("/documents/{document_id}/files/{file_id}")
+async def download_private_document_file(
+    document_id: str,
+    file_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    record = await db.document_files.find_one(
+        {
+            "id": file_id,
+            "document_id": document_id,
+            "user_id": current_user.id,
+            "is_deleted": False,
+        },
+        {"_id": 0},
+    )
+    if not record:
+        raise HTTPException(status_code=404, detail="Private file not found")
+    try:
+        data, stored_content_type = await asyncio.to_thread(
+            fetch_private_file, record["storage_path"]
+        )
+    except Exception:
+        logger.exception("Private file download failed")
+        raise HTTPException(status_code=502, detail="Private file download is temporarily unavailable.")
+    filename = safe_download_name(record.get("filename") or "file")
+    return Response(
+        content=data,
+        media_type=record.get("content_type") or stored_content_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "private, no-store",
+        },
+    )
 
 # --- VERSION ROUTES ---
 
@@ -2369,6 +2628,16 @@ async def generate_audiobook(
         logger.exception("Audiobook generation failed")
         raise HTTPException(status_code=502, detail=f"Audiobook service error: {exc}")
 
+    filename = f"{safe_name}_audiobook.mp3"
+    stored_file = await _store_document_bytes(
+        user_id=current_user.id,
+        document_id=document_id,
+        category="audiobook",
+        variant="openai",
+        filename=filename,
+        data=mp3,
+        content_type="audio/mpeg",
+    )
     await db.documents.update_one(
         {"id": document_id},
         {"$set": {"last_audio_export_at": datetime.now(timezone.utc).isoformat()}},
@@ -2377,9 +2646,11 @@ async def generate_audiobook(
         content=mp3,
         media_type="audio/mpeg",
         headers={
-            "Content-Disposition": f'attachment; filename="{safe_name}_audiobook.mp3"',
+            "Content-Disposition": f'attachment; filename="{filename}"',
             "X-Audiobook-Voice": voice,
             "X-Audiobook-Speed": str(speed),
+            "X-Stored-File-Id": stored_file.id,
+            "Cache-Control": "private, no-store",
         },
     )
 
@@ -2439,6 +2710,16 @@ async def export_audiobook_chapters(
         logger.exception("Per-chapter audiobook export failed")
         raise HTTPException(status_code=502, detail=f"Audiobook service error: {exc}")
 
+    filename = f"{safe_name}_chapters.zip"
+    stored_file = await _store_document_bytes(
+        user_id=current_user.id,
+        document_id=document_id,
+        category="audiobook",
+        variant="chapters",
+        filename=filename,
+        data=zip_bytes,
+        content_type="application/zip",
+    )
     await db.documents.update_one(
         {"id": document_id},
         {"$set": {"last_audio_export_at": datetime.now(timezone.utc).isoformat()}},
@@ -2447,7 +2728,9 @@ async def export_audiobook_chapters(
         content=zip_bytes,
         media_type="application/zip",
         headers={
-            "Content-Disposition": f'attachment; filename="{safe_name}_chapters.zip"',
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Stored-File-Id": stored_file.id,
+            "Cache-Control": "private, no-store",
         },
     )
 
@@ -2568,6 +2851,16 @@ async def elevenlabs_audiobook(
         logger.exception("ElevenLabs audiobook failed")
         raise HTTPException(status_code=502, detail=f"ElevenLabs error: {exc}")
 
+    filename = f"{safe_name}_elevenlabs.mp3"
+    stored_file = await _store_document_bytes(
+        user_id=current_user.id,
+        document_id=document_id,
+        category="audiobook",
+        variant="elevenlabs",
+        filename=filename,
+        data=mp3,
+        content_type="audio/mpeg",
+    )
     await db.documents.update_one(
         {"id": document_id},
         {"$set": {"last_audio_export_at": datetime.now(timezone.utc).isoformat()}},
@@ -2576,9 +2869,11 @@ async def elevenlabs_audiobook(
         content=mp3,
         media_type="audio/mpeg",
         headers={
-            "Content-Disposition": f'attachment; filename="{safe_name}_elevenlabs.mp3"',
+            "Content-Disposition": f'attachment; filename="{filename}"',
             "X-Audiobook-Voice-Id": voice_id,
             "X-Audiobook-Model": model_id or ELEVEN_DEFAULT_MODEL,
+            "X-Stored-File-Id": stored_file.id,
+            "Cache-Control": "private, no-store",
         },
     )
 
@@ -2606,6 +2901,16 @@ async def upload_audiobook(
     await db.documents.update_one(
         {"id": document_id},
         {"$set": {"audio_upload": upload, "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    await _register_existing_private_file(
+        user_id=current_user.id,
+        document_id=document_id,
+        category="media",
+        variant="uploaded_audiobook",
+        filename=upload["filename"],
+        content_type=audio_media_type(upload["ext"]),
+        size_bytes=upload["size"],
+        storage_path=upload["storage_path"],
     )
 
     return {
@@ -2636,7 +2941,10 @@ async def fetch_audiobook(
     return Response(
         content=fetch_audio_bytes(upload["storage_path"]),
         media_type=audio_media_type(ext),
-        headers={"Content-Disposition": f'inline; filename="{safe_name}.{ext}"'},
+        headers={
+            "Content-Disposition": f'inline; filename="{safe_name}.{ext}"',
+            "Cache-Control": "private, no-store",
+        },
     )
 
 
@@ -2652,9 +2960,20 @@ async def remove_audiobook(
         raise HTTPException(status_code=404, detail="Document not found")
     deleted = delete_audio_upload(doc)
     if deleted:
+        now = datetime.now(timezone.utc).isoformat()
         await db.documents.update_one(
             {"id": document_id},
-            {"$unset": {"audio_upload": ""}, "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}},
+            {"$unset": {"audio_upload": ""}, "$set": {"updated_at": now}},
+        )
+        await db.document_files.update_many(
+            {
+                "document_id": document_id,
+                "user_id": current_user.id,
+                "category": "media",
+                "variant": "uploaded_audiobook",
+                "is_deleted": False,
+            },
+            {"$set": {"is_deleted": True, "deleted_at": now, "updated_at": now}},
         )
     return {"deleted": deleted}
 
@@ -2708,6 +3027,16 @@ async def upload_cover(
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }},
     )
+    await _register_existing_private_file(
+        user_id=current_user.id,
+        document_id=document_id,
+        category="media",
+        variant="cover",
+        filename=upload["filename"],
+        content_type=cover_media_type(upload["ext"]),
+        size_bytes=upload["size"],
+        storage_path=upload["storage_path"],
+    )
     return {
         "document_id": document_id,
         "filename": upload["filename"],
@@ -2750,12 +3079,23 @@ async def remove_cover(
         raise HTTPException(status_code=404, detail="Document not found")
     deleted = delete_cover_upload(doc)
     if deleted:
+        now = datetime.now(timezone.utc).isoformat()
         await db.documents.update_one(
             {"id": document_id},
             {
                 "$unset": {"cover_upload": ""},
-                "$set": {"cover_image_ext": None, "updated_at": datetime.now(timezone.utc).isoformat()},
+                "$set": {"cover_image_ext": None, "updated_at": now},
             },
+        )
+        await db.document_files.update_many(
+            {
+                "document_id": document_id,
+                "user_id": current_user.id,
+                "category": "media",
+                "variant": "cover",
+                "is_deleted": False,
+            },
+            {"$set": {"is_deleted": True, "deleted_at": now, "updated_at": now}},
         )
     return {"deleted": deleted}
 
@@ -2796,12 +3136,24 @@ async def cover_to_pdf(
         logger.exception("Cover-to-PDF failed")
         raise HTTPException(status_code=500, detail=f"Cover PDF generation failed: {exc}")
 
+    filename = f"{safe_name}_cover_{trim_key}.pdf"
+    stored_file = await _store_document_bytes(
+        user_id=current_user.id,
+        document_id=document_id,
+        category="export",
+        variant=f"cover_pdf:{trim_key}",
+        filename=filename,
+        data=pdf_bytes,
+        content_type="application/pdf",
+    )
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
         headers={
-            "Content-Disposition": f'attachment; filename="{safe_name}_cover_{trim_key}.pdf"',
+            "Content-Disposition": f'attachment; filename="{filename}"',
             "X-Trim-Size": trim_key,
+            "X-Stored-File-Id": stored_file.id,
+            "Cache-Control": "private, no-store",
         },
     )
 
@@ -2882,6 +3234,17 @@ async def create_voice_memo(
             "$push": {"memos": memo_doc},
             "$set": {"updated_at": datetime.now(timezone.utc).isoformat()},
         },
+    )
+    await _register_existing_private_file(
+        user_id=current_user.id,
+        document_id=document_id,
+        category="media",
+        variant=f"voice_memo:{memo_id}",
+        filename=f"voice_memo_{memo_id}.{upload['ext']}",
+        content_type=memo_media_type(upload["ext"]),
+        size_bytes=upload["size"],
+        storage_path=upload["storage_path"],
+        created_at=memo_doc["created_at"],
     )
     return memo_doc
 
@@ -2974,12 +3337,23 @@ async def delete_voice_memo(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     delete_memo_file(doc, memo_id)
+    now = datetime.now(timezone.utc).isoformat()
     result = await db.documents.update_one(
         {"id": document_id},
         {
             "$pull": {"memos": {"id": memo_id}},
-            "$set": {"updated_at": datetime.now(timezone.utc).isoformat()},
+            "$set": {"updated_at": now},
         },
+    )
+    await db.document_files.update_many(
+        {
+            "document_id": document_id,
+            "user_id": current_user.id,
+            "category": "media",
+            "variant": f"voice_memo:{memo_id}",
+            "is_deleted": False,
+        },
+        {"$set": {"is_deleted": True, "deleted_at": now, "updated_at": now}},
     )
     return {"deleted": result.modified_count > 0}
 
@@ -3079,6 +3453,16 @@ async def export_document(
             trim_key=trim_key,
             publisher=publisher,
         )
+        filename = f"{safe_name}_{trim_key}.pdf"
+        stored_file = await _store_document_bytes(
+            user_id=current_user.id,
+            document_id=document_id,
+            category="export",
+            variant=f"pdf:{trim_key}",
+            filename=filename,
+            data=pdf_bytes,
+            content_type="application/pdf",
+        )
         await db.documents.update_one(
             {"id": document_id},
             {"$set": {"last_pdf_export_at": datetime.now(timezone.utc).isoformat()}},
@@ -3087,8 +3471,10 @@ async def export_document(
             content=pdf_bytes,
             media_type="application/pdf",
             headers={
-                "Content-Disposition": f'attachment; filename="{safe_name}_{trim_key}.pdf"',
+                "Content-Disposition": f'attachment; filename="{filename}"',
                 "X-Trim-Size": trim_key,
+                "X-Stored-File-Id": stored_file.id,
+                "Cache-Control": "private, no-store",
             },
         )
 
@@ -3099,6 +3485,16 @@ async def export_document(
             html_content=content,
             publisher=publisher,
         )
+        filename = f"{safe_name}.epub"
+        stored_file = await _store_document_bytes(
+            user_id=current_user.id,
+            document_id=document_id,
+            category="export",
+            variant="epub",
+            filename=filename,
+            data=epub_bytes,
+            content_type="application/epub+zip",
+        )
         await db.documents.update_one(
             {"id": document_id},
             {"$set": {"last_epub_export_at": datetime.now(timezone.utc).isoformat()}},
@@ -3107,7 +3503,9 @@ async def export_document(
             content=epub_bytes,
             media_type="application/epub+zip",
             headers={
-                "Content-Disposition": f'attachment; filename="{safe_name}.epub"',
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "X-Stored-File-Id": stored_file.id,
+                "Cache-Control": "private, no-store",
             },
         )
 

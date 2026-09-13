@@ -20,6 +20,16 @@ A book publishing / writing application that allows users to upload a Word doc, 
 - [x] Included `.gitignore` and GitHub-facing project files while excluding `.git/` repository history, `.emergent/` internals, dependencies, build output, and caches.
 - [x] Included sanitized backend/frontend `.env` files with key names preserved and values blank; removed test credentials and scanned the archive for common secret/token patterns.
 
+## Implemented (2026-09-13) — PRIVATE FILE & MEDIA STORAGE
+- [x] Extended Emergent Object Storage to retain original `.docx` / `.txt` manuscript uploads, generated print PDFs, ePub files, cover PDFs, OpenAI/ElevenLabs audiobooks, and per-chapter audiobook ZIPs.
+- [x] Added MongoDB `document_files` registry with owner/document scope, canonical storage paths, MIME types, sizes, variants, timestamps, and soft-delete status.
+- [x] Added private authenticated file APIs: `GET /api/documents/{id}/files` and `GET /api/documents/{id}/files/{file_id}`. Storage paths and user IDs are never exposed; cross-user access returns 404.
+- [x] Existing cover, uploaded audiobook, and voice-memo objects are registered/backfilled into the same private vault without duplicating their stored bytes.
+- [x] Regenerating the same export variant overwrites its canonical object and reuses its file record to prevent duplicate active records.
+- [x] Added the Editor **Private File Vault** with filename/type/size details, refresh, and authenticated downloads. Verified without horizontal overflow at 1920×800 and 390×844.
+- [x] Transient read-aloud previews and dictation chunks remain intentionally unretained; only durable manuscript/media assets are stored.
+- [x] Testing: private-storage suite 4/4, iteration-20 suite 3/3, storage regressions 66 passed / 1 skipped, post-audit harness regressions 44 passed / 1 skipped, and frontend production build passed.
+
 
 ## Implemented (as of 2026-02-13) — EMERGENT OBJECT STORAGE MIGRATION (P0 deploy blocker resolved)
 - [x] All file uploads (book covers, audiobook MP3s, per-paragraph voice memos) migrated from ephemeral pod disk to **Emergent Object Storage**.
@@ -30,7 +40,6 @@ A book publishing / writing application that allows users to upload a Word doc, 
 
 ## Pending (next up)
 - [ ] Add **OpenAI-compatible custom endpoint URL** (Ollama / Groq / LM Studio) to the BYO-key matrix in `/settings` — user asked for Ollama support; only OpenAI + Anthropic BYO keys are exposed today.
-- [ ] Per-chapter audiobook export automation (P2).
 
 ## Implemented (as of 2026-02-28) — AGENT QUOTA / PAYWALL
 - [x] **Writing agent locked behind Author Pro plan**:
@@ -163,7 +172,7 @@ A book publishing / writing application that allows users to upload a Word doc, 
   - Record raw audio notes anchored to the cursor's current paragraph (auto-detected via Quill block index)
   - List/play/transcribe-and-insert/delete per memo
   - Transcripts cached after first Whisper call (subsequent inserts re-use cached text)
-  - Storage: file on disk under `/app/backend/uploads/memos/{user_id}/{document_id}/`, metadata in `document.memos` array
+  - Storage: private bytes in Emergent Object Storage, metadata in `document.memos` and the `document_files` registry
 - [x] **Help & Documentation page** (`/help`, public route): 13 sections covering every major feature (Getting Started, Pipeline, Upload, Editor, Book Setup, Editor's Desk, AI Polish, Dictation, Voice Memos, Audio Studio, Export, Privacy, Tips). Sticky TOC sidebar, motion-animated section reveals, **bold** markdown rendering. Help links in Dashboard + Editor headers.
 - [x] **Referral / Affiliate system**:
   - Every user gets an 8-char `referral_code` on registration
@@ -200,6 +209,7 @@ A book publishing / writing application that allows users to upload a Word doc, 
 /app/
 ├── backend/
 │   ├── server.py          # FastAPI app: auth, documents, upload, export, AI, integrations
+│   ├── private_file_storage.py # Private manuscript/export/media object-storage helpers
 │   ├── exporters.py       # KDP_TRIM_SIZES, docx_to_html, generate_pdf, generate_epub
 │   ├── ai_editor.py       # Claude Sonnet 4.5 editorial tools (5 endpoints)
 │   ├── tests/test_upload_export.py
@@ -215,6 +225,8 @@ A book publishing / writing application that allows users to upload a Word doc, 
 - `POST /api/auth/register | /login | GET /api/auth/me`
 - `GET|POST|PUT|DELETE /api/documents[/{id}]`
 - `POST /api/documents/upload` (.docx, .txt; .pages → 400 with guidance)
+- `GET /api/documents/{id}/files` → owner-scoped private file registry
+- `GET /api/documents/{id}/files/{file_id}` → authenticated private download
 - `GET /api/export/formats` → 12 KDP trim sizes + epub
 - `POST /api/documents/{id}/export?format=pdf&trim={key}` → application/pdf
 - `POST /api/documents/{id}/export?format=epub` → application/epub+zip

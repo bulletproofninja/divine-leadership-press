@@ -5,8 +5,14 @@ import time
 import pytest
 import requests
 from docx import Document as DocxDocument
+from dotenv import dotenv_values
 
-BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://editorial-studio-19.preview.emergentagent.com").rstrip("/")
+BASE_URL = (
+    os.environ.get("REACT_APP_BACKEND_URL")
+    or dotenv_values("/app/frontend/.env").get("REACT_APP_BACKEND_URL")
+)
+assert BASE_URL, "REACT_APP_BACKEND_URL is required"
+BASE_URL = BASE_URL.rstrip("/")
 API = f"{BASE_URL}/api"
 
 

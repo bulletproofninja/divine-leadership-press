@@ -1,0 +1,57 @@
+{
+  "summary": "Executed storage-integration verification across backend and UI for private vault flows. Backend core/private/regression suites passed, including new iteration-20 tests for media backfill and document-level soft-delete of document_files. UI login→editor flow verified private vault refresh/list/download and responsive checks at 1920x800 and 390x844 without horizontal overflow.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "test harness (/app/backend/tests/test_pipeline_cover.py, /app/backend/tests/test_voice_memos.py)",
+        "issue": "Tests crash at collection when REACT_APP_BACKEND_URL is not exported in shell (None.rstrip)."
+      },
+      {
+        "endpoint": "test harness (/app/backend/tests/test_upload_export.py)",
+        "issue": "Uses hardcoded fallback URL, violating env-only URL guidance for regression tests."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_private_file_storage.py",
+    "/app/backend/tests/test_upload_export.py",
+    "/app/backend/tests/test_pipeline_cover.py",
+    "/app/backend/tests/test_elevenlabs_upload.py",
+    "/app/backend/tests/test_voice_memos.py",
+    "/app/backend/tests/test_iter20_private_vault.py",
+    "/app/test_reports/pytest/iter20_private_storage.xml",
+    "/app/test_reports/pytest/iter20_regression_storage_related.xml",
+    "/app/test_reports/pytest/iter20_private_vault.xml"
+  ],
+  "action_items": [
+    "Harden backend test files to always read REACT_APP_BACKEND_URL from frontend/.env when shell env is missing.",
+    "Remove hardcoded backend URL fallback in test_upload_export.py to keep env-only compliance.",
+    "Optional follow-up: add a non-live/mocked integration test strategy for successful OpenAI/ElevenLabs/chapter generation persistence to avoid expensive external calls."
+  ],
+  "critical_code_review_comments": [
+    "Storage routes for manuscript upload, export(pdf/epub), cover-pdf, uploaded audiobook, voice memos, and document delete correctly use document_files with owner scoping and private download cache headers.",
+    "Code-path review confirms generated audiobook/chapter/elevenlabs routes call _store_document_bytes and return X-Stored-File-Id on success; existing tests already validate ElevenLabs safe auth-error path (401/400) and avoid uncontrolled spend.",
+    "object_storage.py currently contains fallback defaults (INTEGRATION_PROXY_URL and STORAGE_APP_PREFIX). This is not failing now, but conflicts with strict fail-fast env-only guideline if enforced later."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter20_private_vault.py",
+    "/app/test_reports/iteration_20.json"
+  ],
+  "success_rate": {
+    "backend": "100% pass on executed assertions (73 passed, 1 skipped in storage-related suites)",
+    "frontend": "100% for tested private-vault + responsive flows"
+  },
+  "test_credentials": "Used /app/memory/test_credentials.md owner account: bagmoneyceo@gmail.com / Surfwall1 for UI auth. Backend tests used fresh TEST_* users.",
+  "seed_data_creation": "Created temporary TEST_iter20_* users and documents, including TEST_UI_Private_Vault_* editor document and backend test artifacts.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Main requested private storage features are currently working in tested paths. If adding more generation coverage, focus on low-cost deterministic checks for audiobook/chapter success persistence without live-token spend.",
+  "rca_of_the_issue": "No product-level storage regression reproduced. Only test-harness quality issues found: two suites assume REACT_APP_BACKEND_URL exists in shell and one suite hardcodes a fallback URL."
+}
