@@ -8,6 +8,7 @@ import uuid
 from typing import Optional
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
+from house_style import EDITORIAL_POLICY, remove_em_dashes
 
 MODEL_PROVIDER = "anthropic"
 MODEL_NAME = "claude-sonnet-4-5-20250929"
@@ -16,7 +17,8 @@ SYSTEM_PROMPT = (
     "You are a senior literary editor at Divine Leadership Press, a century-old "
     "publishing house specialising in leadership and non-fiction. You write with "
     "restraint, precision, and respect for the author's voice. You return ONLY the "
-    "requested output — no preamble, no commentary, no 'Here is...' phrases."
+    "requested output, with no preamble, commentary, or introductory phrases.\n\n"
+    + EDITORIAL_POLICY
 )
 
 
@@ -51,7 +53,7 @@ async def _ask_claude(prompt: str) -> str:
     ).with_model(MODEL_PROVIDER, MODEL_NAME)
 
     response = await chat.send_message(UserMessage(text=prompt))
-    return (response or "").strip()
+    return remove_em_dashes((response or "").strip())
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +102,7 @@ async def generate_blurb(html_content: str, title: Optional[str], author: Option
         + ". The blurb must be 130–160 words, marketable, written in third person "
         "(unless the book is clearly memoir), open with a hook, end with a line "
         "that invites the reader in, and feel literary rather than salesy. Return "
-        "only the blurb — no headings, no quotation marks.\n\n"
+        "only the blurb, with no headings or quotation marks.\n\n"
         "Manuscript excerpt:\n---\n"
         f"{text}\n"
         "---"

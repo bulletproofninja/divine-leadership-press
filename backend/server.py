@@ -105,6 +105,7 @@ from emergentintegrations.payments.stripe.checkout import (
 )
 import subscription_billing as subs_billing
 import stripe  # for stripe.error.InvalidRequestError exception handling
+from secrets_vault import decrypt_secret, encrypt_secret
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -124,7 +125,9 @@ client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
 # JWT Configuration
-SECRET_KEY = os.environ.get('JWT_SECRET', 'divine-leadership-press-secret-key-2025')
+SECRET_KEY = (os.environ.get('JWT_SECRET') or '').strip()
+if len(SECRET_KEY) < 32:
+    raise RuntimeError('JWT_SECRET must be configured with at least 32 characters.')
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_DAYS = 30
 
@@ -161,7 +164,7 @@ class User(BaseModel):
 class UserRegister(BaseModel):
     email: EmailStr
     name: str
-    password: str
+    password: str = Field(min_length=8, max_length=128)
     referral_code: Optional[str] = None  # optional invite code
 
 class UserLogin(BaseModel):
@@ -367,13 +370,15 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> User:
             raise HTTPException(status_code=401, detail="Invalid token")
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
-    except jwt.JWTError:
+    except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
     
     user_doc = await db.users.find_one({"id": user_id}, {"_id": 0})
     if not user_doc:
         raise HTTPException(status_code=401, detail="User not found")
     
+    for field in ("elevenlabs_api_key", "openai_api_key", "anthropic_api_key"):
+        user_doc[field] = decrypt_secret(user_doc.get(field))
     return User(**user_doc)
 
 # --- AUTH ROUTES ---
@@ -1573,7 +1578,7 @@ async def set_openai_key(
         raise HTTPException(status_code=400, detail="OpenAI API key looks invalid (expected sk-... at least 20 chars).")
     await db.users.update_one(
         {"id": current_user.id},
-        {"$set": {"openai_api_key": key}},
+        {"$set": {"openai_api_key": encrypt_secret(key)}},
     )
     current_user.openai_api_key = key
     return _user_response_from(current_user)
@@ -1599,7 +1604,7 @@ async def set_anthropic_key(
         raise HTTPException(status_code=400, detail="Anthropic API key looks invalid (expected sk-... at least 20 chars).")
     await db.users.update_one(
         {"id": current_user.id},
-        {"$set": {"anthropic_api_key": key}},
+        {"$set": {"anthropic_api_key": encrypt_secret(key)}},
     )
     current_user.anthropic_api_key = key
     return _user_response_from(current_user)
@@ -1641,7 +1646,7 @@ async def set_elevenlabs_key(
         raise HTTPException(status_code=400, detail="ElevenLabs API key looks invalid.")
     await db.users.update_one(
         {"id": current_user.id},
-        {"$set": {"elevenlabs_api_key": key}},
+        {"$set": {"elevenlabs_api_key": encrypt_secret(key)}},
     )
     return UserResponse(
         id=current_user.id,
@@ -2255,7 +2260,7 @@ async def run_ai_edit(
 
 class CopyEditRequest(BaseModel):
     content: Optional[str] = None
-    style_guide: Optional[str] = "chicago"
+    style_guide: Optional[str] = "house"
 
 
 @api_router.get("/copyedit/style-guides")
@@ -2279,9 +2284,9 @@ async def run_copyedit(
     if not html_content.strip():
         raise HTTPException(status_code=400, detail="Document is empty — add content before running the copy editor.")
 
-    style_guide = (payload.style_guide or "chicago").lower()
+    style_guide = (payload.style_guide or "house").lower()
     if style_guide not in STYLE_GUIDES:
-        style_guide = "chicago"
+        style_guide = "house"
 
     try:
         result = await run_copyedit_pass(html_content=html_content, style_guide=style_guide)
@@ -2766,6 +2771,7 @@ async def remove_cover(
 async def cover_to_pdf(
     document_id: str,
     trim: Optional[str] = None,
+    include_bleed: bool = True,
     current_user: User = Depends(get_current_user),
 ):
     doc = await db.documents.find_one(
@@ -2788,7 +2794,8 @@ async def cover_to_pdf(
         pdf_bytes = image_to_pdf(
             image_bytes=fetch_cover_bytes(upload["storage_path"]),
             trim_key=trim_key,
-            title=f"{title} — Cover",
+            title=f"{title}: Cover",
+            include_bleed=include_bleed,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -2802,6 +2809,7 @@ async def cover_to_pdf(
         headers={
             "Content-Disposition": f'attachment; filename="{safe_name}_cover_{trim_key}.pdf"',
             "X-Trim-Size": trim_key,
+            "X-Bleed": "0.125in" if include_bleed else "none",
         },
     )
 
@@ -3156,7 +3164,11 @@ app.include_router(api_router)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=[
+        origin.strip()
+        for origin in os.environ.get('CORS_ORIGINS', 'http://localhost:3000').split(',')
+        if origin.strip() and origin.strip() != '*'
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )

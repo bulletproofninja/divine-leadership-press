@@ -14,7 +14,7 @@ import { useNavigate } from 'react-router-dom';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
-const LOGO_URL = 'https://customer-assets.emergentagent.com/job_book-press/artifacts/gwdawx4q_Divine%20Leadership%20Press%20Emblem%281%29.png';
+const LOGO_URL = '/brand/divine-leadership-press-emblem.png';
 
 const PIPELINE_STEPS = [
   { key: 'manuscript', label: 'Manuscript', icon: Edit },

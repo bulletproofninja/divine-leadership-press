@@ -19,7 +19,7 @@ import InlineCommandBar from '../components/InlineCommandBar';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
-const LOGO_URL = 'https://customer-assets.emergentagent.com/job_book-press/artifacts/gwdawx4q_Divine%20Leadership%20Press%20Emblem%281%29.png';
+const LOGO_URL = '/brand/divine-leadership-press-emblem.png';
 
 const getAuthHeaders = () => ({
   headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
@@ -202,7 +202,7 @@ export default function EditorPage({ user }) {
   const [aiResult, setAiResult] = useState(null); // { tool, label, result, result_type }
   const [copyEditRunning, setCopyEditRunning] = useState(false);
   const [copyEditData, setCopyEditData] = useState(null); // { issues, readability, style_guide, paragraph_count }
-  const [styleGuide, setStyleGuide] = useState('chicago');
+  const [styleGuide, setStyleGuide] = useState('house');
   const [styleGuides, setStyleGuides] = useState([]);
   const [issueFilter, setIssueFilter] = useState('all');
   const [ttsVoices, setTtsVoices] = useState([]);
@@ -938,7 +938,7 @@ export default function EditorPage({ user }) {
     setDownloadingCoverPdf(true);
     try {
       const r = await axios.post(
-        `${API}/documents/${documentId}/cover/pdf?trim=${encodeURIComponent(pdfTrim)}`,
+        `${API}/documents/${documentId}/cover/pdf?trim=${encodeURIComponent(pdfTrim)}&include_bleed=true`,
         {},
         { ...getAuthHeaders(), responseType: 'blob' }
       );
@@ -952,7 +952,7 @@ export default function EditorPage({ user }) {
       a.click();
       a.remove();
       window.URL.revokeObjectURL(url);
-      toast.success(`Cover PDF downloaded (${pdfTrim})`);
+      toast.success(`Full-bleed cover PDF downloaded (${pdfTrim}, 0.125-inch bleed)`);
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Cover PDF generation failed');
     } finally {
@@ -1861,7 +1861,7 @@ export default function EditorPage({ user }) {
                           {downloadingCoverPdf ? (
                             <><Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> Generating…</>
                           ) : (
-                            <><FileDown className="h-3.5 w-3.5 mr-1" /> Download Cover as PDF</>
+                            <><FileDown className="h-3.5 w-3.5 mr-1" /> Download Full-Bleed Cover PDF</>
                           )}
                         </Button>
                         <Button
@@ -1981,15 +1981,18 @@ export default function EditorPage({ user }) {
               </div>
             </Card>
 
-            {/* Editor's Desk — Full Copy-Edit Pass */}
+            {/* Editor's Desk: Full Copy-Edit Pass */}
             <Card data-testid="editors-desk-panel" className="p-4 bg-card/50 backdrop-blur-sm">
               <h3 className="text-sm font-heading font-semibold mb-3 flex items-center gap-2">
                 <ScanSearch className="h-4 w-4 text-primary" />
                 Editor's Desk
               </h3>
               <p className="text-xs text-muted-foreground mb-3 font-body">
-                Full copy-edit pass — grammar, punctuation, run-ons, passive voice, consistency, and clarity.
+                Full copy-edit pass for grammar, punctuation, run-ons, passive voice, consistency, and clarity.
               </p>
+              <div className="mb-3 rounded-sm border border-primary/20 bg-primary/5 p-2 text-[11px] leading-relaxed text-foreground" data-testid="house-style-notice">
+                <strong>Author-Protective Mode:</strong> Your wording and meaning remain unchanged unless you explicitly request a rewrite. DLP suggestions never introduce em dashes.
+              </div>
 
               <div className="mb-3">
                 <Label className="text-xs">Style Guide</Label>
@@ -2005,7 +2008,7 @@ export default function EditorPage({ user }) {
                       { key: 'house', description: 'DLP House Style' },
                     ]).map((g) => (
                       <SelectItem key={g.key} value={g.key} className="text-xs">
-                        {g.key.toUpperCase()} — {g.description.split('—')[0].trim()}
+                        {g.key.toUpperCase()}: {g.description}
                       </SelectItem>
                     ))}
                   </SelectContent>

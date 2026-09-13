@@ -4,7 +4,7 @@ Coverage:
 - GET /api/copyedit/style-guides  -- public, 4 keys
 - POST /api/documents/{id}/copyedit -- single real Claude call (full pass)
 - Error paths: empty doc 400, unauthenticated 401, cross-user 404
-- Invalid style_guide defaults to chicago silently
+- Invalid style_guide defaults to DLP house style silently
 - Issue schema + 'original' substring + must_fix -> suggested -> stylistic sort
 """
 import os
@@ -111,7 +111,7 @@ class TestCopyEditHappyPath:
         result, _issues = copyedit_result
         for key in ("issues", "readability", "style_guide", "paragraph_count"):
             assert key in result, f"Missing top-level key: {key}"
-        assert result["style_guide"] == "chicago"
+        assert result["style_guide"] == "house"
         assert isinstance(result["issues"], list)
         assert isinstance(result["paragraph_count"], int) and result["paragraph_count"] > 0
 
@@ -197,7 +197,7 @@ class TestInvalidStyleGuide:
             timeout=120,
         )
         assert r.status_code == 200, r.text
-        assert r.json().get("style_guide") == "chicago"
+        assert r.json().get("style_guide") == "house"
 
 
 # --- Error paths ---
