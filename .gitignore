@@ -48,6 +48,7 @@ dump.rdb
 
 # Python
 __pycache__/
+.verification-venv/
 *pyc*
 venv/
 .venv/
@@ -106,6 +107,8 @@ frontend/node_modules/.cache/default-development/25.pack
 .env
 .env.*
 *.env
+!.env.example
+!**/.env.example
 credentials.json
 *.key
 .credentials

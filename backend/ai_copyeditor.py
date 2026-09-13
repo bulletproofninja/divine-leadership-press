@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from bs4 import BeautifulSoup
 from emergentintegrations.llm.chat import LlmChat, UserMessage
+from house_style import EDITORIAL_POLICY, follows_house_style
 
 
 MODEL_PROVIDER = "anthropic"
@@ -23,17 +24,17 @@ CATEGORIES = [
 SEVERITIES = ["must_fix", "suggested", "stylistic"]
 
 STYLE_GUIDES = {
-    "chicago": "The Chicago Manual of Style (17th ed.) — book/literary default. Oxford commas, en-dashes for ranges, em-dashes (no spaces) for asides.",
-    "ap": "The Associated Press Stylebook — journalistic. No Oxford comma. Spell out one through nine; numerals for 10+. Concise.",
-    "mla": "MLA Handbook (9th ed.) — academic. Oxford comma. Italics for titles. Plain prose.",
-    "house": "Divine Leadership Press house style — Chicago Manual baseline, with serial commas, em-dashes without spaces, and a preference for restraint over flourish.",
+    "chicago": "Chicago Manual baseline for books, with Oxford commas and no em dashes.",
+    "ap": "AP baseline for journalism, with no Oxford comma, concise prose, and no em dashes.",
+    "mla": "MLA baseline for academic work, with Oxford commas, italicized titles, and no em dashes.",
+    "house": "Divine Leadership Press house style, with serial commas, restrained prose, author-protective editing, and no em dashes.",
 }
 
 SYSTEM_PROMPT = (
     "You are a senior copy editor at Divine Leadership Press, a century-old "
     "publishing house. You are exacting, conservative, and respect the author's "
     "voice. You return ONLY valid JSON in the exact schema requested, with no "
-    "preamble or commentary."
+    "preamble or commentary.\n\n" + EDITORIAL_POLICY
 )
 
 
@@ -146,7 +147,7 @@ def _strip_code_fences(text: str) -> str:
 async def run_copyedit_pass(
     *,
     html_content: str,
-    style_guide: str = "chicago",
+    style_guide: str = "house",
 ) -> Dict[str, Any]:
     """Return {issues, readability, style_guide, paragraph_count}."""
     paragraphs = html_to_paragraphs(html_content)
@@ -158,7 +159,7 @@ async def run_copyedit_pass(
             "style_guide": style_guide, "paragraph_count": 0,
         }
 
-    guide_text = STYLE_GUIDES.get(style_guide, STYLE_GUIDES["chicago"])
+    guide_text = STYLE_GUIDES.get(style_guide, STYLE_GUIDES["house"])
     manuscript = _build_manuscript_block(paragraphs)
 
     prompt = f"""Perform a full copy-edit pass on the manuscript below. Apply {guide_text}
@@ -173,7 +174,7 @@ For each issue return an entry in a JSON object with this EXACT schema and nothi
       "category": "<one of: {', '.join(CATEGORIES)}>",
       "severity": "<one of: must_fix | suggested | stylistic>",
       "paragraph_index": <integer matching the [P#] marker>,
-      "original": "<the exact substring as it appears in that paragraph — copy verbatim, including punctuation>",
+      "original": "<the exact substring as it appears in that paragraph; copy verbatim, including punctuation>",
       "suggestion": "<the corrected substring>",
       "rationale": "<one short sentence explaining the fix>"
     }}
@@ -189,6 +190,7 @@ Rules:
 - Keep "original" as short as possible (a few words is ideal; whole clause only if needed).
 - Return at most 60 issues, prioritising the highest severity.
 - Output JSON only. No markdown fences, no commentary.
+- Suggestions must never contain an em dash.
 
 Manuscript:
 ---
@@ -238,6 +240,7 @@ Manuscript:
             or severity not in SEVERITIES
             or not isinstance(original, str)
             or not isinstance(suggestion, str)
+            or not follows_house_style(suggestion)
             or paragraph_index < 0
             or paragraph_index >= len(paragraphs)
         ):
