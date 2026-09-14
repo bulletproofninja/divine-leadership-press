@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { BookOpen, FileText, Download, Globe, Sparkles, Eye, BarChart, FileDown } from 'lucide-react';
+import { ArrowLeft, BookOpen, FileText, Download, Globe, Sparkles, Eye, BarChart, FileDown, Mail } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -17,6 +17,8 @@ export default function LandingPage({ onLogin }) {
   const [showAuth, setShowAuth] = useState(false);
   const [isLogin, setIsLogin] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [forgotMode, setForgotMode] = useState(false);
+  const [resetRequested, setResetRequested] = useState(false);
   const [formData, setFormData] = useState({
     email: '',
     password: '',
@@ -53,12 +55,28 @@ export default function LandingPage({ onLogin }) {
             ...(formData.referral_code ? { referral_code: formData.referral_code } : {}),
           };
 
-      const response = await axios.post(`${API}${endpoint}`, payload);
+      const response = await axios.post(`${API}${endpoint}`, payload, { withCredentials: true });
 
       toast.success(isLogin ? 'Welcome back!' : 'Account created successfully!');
       onLogin(response.data.token, response.data.user);
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Authentication failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleForgotPassword = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const response = await axios.post(`${API}/auth/forgot-password`, {
+        email: formData.email,
+      });
+      setResetRequested(true);
+      toast.success(response.data.message);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Could not request a reset link');
     } finally {
       setLoading(false);
     }
@@ -273,24 +291,79 @@ export default function LandingPage({ onLogin }) {
             onClick={(e) => e.stopPropagation()}
           >
             <Card data-testid="auth-modal" className="w-full max-w-md p-8 bg-card/95 backdrop-blur-md">
-              <div className="mb-6 flex flex-col items-center">
-                <img src={LOGO_URL} alt="Divine Leadership Press" className="w-20 h-20 mb-4" />
-                <h2 className="text-2xl font-heading font-bold mb-2">
-                  {isLogin ? 'Welcome Back' : 'Create Account'}
-                </h2>
-                <p className="text-muted-foreground font-body text-center">
-                  {isLogin ? 'Sign in to your account' : 'Start your publishing journey'}
-                </p>
-              </div>
-
-              <Tabs value={isLogin ? 'login' : 'register'} onValueChange={(v) => setIsLogin(v === 'login')}>
-                <TabsList className="grid w-full grid-cols-2 mb-6">
-                  <TabsTrigger data-testid="login-tab" value="login">Login</TabsTrigger>
-                  <TabsTrigger data-testid="register-tab" value="register">Register</TabsTrigger>
-                </TabsList>
-
-                <form onSubmit={handleSubmit}>
+              {forgotMode ? (
+                <div data-testid="forgot-password-panel">
+                  <div className="mb-6 flex flex-col items-center">
+                    <span className="h-14 w-14 mb-4 border bg-primary/5 flex items-center justify-center">
+                      <Mail className="h-6 w-6 text-primary" />
+                    </span>
+                    <h2 className="text-2xl font-heading font-bold mb-2">Reset your password</h2>
+                    <p data-testid="forgot-password-help" className="text-sm text-muted-foreground font-body text-center">
+                      Enter your account email. We&rsquo;ll send a secure, single-use reset link.
+                    </p>
+                  </div>
+                  {resetRequested ? (
+                    <div data-testid="forgot-password-confirmation" className="space-y-4">
+                      <div className="border-l-4 border-l-emerald-600 bg-emerald-50 p-4 text-sm text-emerald-900">
+                        If an account exists for that email, a reset link is on its way. Check your inbox and spam folder.
+                      </div>
+                      <Button
+                        data-testid="forgot-password-back-button"
+                        type="button"
+                        variant="outline"
+                        className="w-full rounded-sm"
+                        onClick={() => { setForgotMode(false); setResetRequested(false); }}
+                      >
+                        <ArrowLeft className="h-4 w-4 mr-2" /> Back to sign in
+                      </Button>
+                    </div>
+                  ) : (
+                    <form data-testid="forgot-password-form" onSubmit={handleForgotPassword} className="space-y-4">
+                      <div>
+                        <Label htmlFor="forgot-email">Email</Label>
+                        <Input
+                          id="forgot-email"
+                          data-testid="forgot-password-email-input"
+                          type="email"
+                          placeholder="you@example.com"
+                          value={formData.email}
+                          onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                          required
+                        />
+                      </div>
+                      <Button data-testid="forgot-password-submit-button" type="submit" className="w-full rounded-sm" disabled={loading}>
+                        {loading ? 'Sending secure link…' : 'Send reset link'}
+                      </Button>
+                      <Button
+                        data-testid="forgot-password-cancel-button"
+                        type="button"
+                        variant="ghost"
+                        className="w-full rounded-sm"
+                        onClick={() => setForgotMode(false)}
+                      >
+                        <ArrowLeft className="h-4 w-4 mr-2" /> Back to sign in
+                      </Button>
+                    </form>
+                  )}
+                </div>
+              ) : (
+                <>
+                  <div className="mb-6 flex flex-col items-center">
+                    <img src={LOGO_URL} alt="Divine Leadership Press" className="w-20 h-20 mb-4" />
+                    <h2 className="text-2xl font-heading font-bold mb-2">
+                      {isLogin ? 'Welcome Back' : 'Create Account'}
+                    </h2>
+                    <p className="text-muted-foreground font-body text-center">
+                      {isLogin ? 'Sign in to your account' : 'Start your publishing journey'}
+                    </p>
+                  </div>
+                  <Tabs value={isLogin ? 'login' : 'register'} onValueChange={(v) => setIsLogin(v === 'login')}>
+                    <TabsList className="grid w-full grid-cols-2 mb-6">
+                      <TabsTrigger data-testid="login-tab" value="login">Login</TabsTrigger>
+                      <TabsTrigger data-testid="register-tab" value="register">Register</TabsTrigger>
+                    </TabsList>
                   <TabsContent value="login" className="space-y-4">
+                    <form onSubmit={handleSubmit} className="space-y-4">
                     <div>
                       <Label htmlFor="login-email">Email</Label>
                       <Input
@@ -318,9 +391,20 @@ export default function LandingPage({ onLogin }) {
                     <Button data-testid="login-submit-btn" type="submit" className="w-full rounded-sm" disabled={loading}>
                       {loading ? 'Signing in...' : 'Sign In'}
                     </Button>
+                    </form>
+                    <Button
+                      data-testid="forgot-password-link"
+                      type="button"
+                      variant="link"
+                      className="w-full h-auto p-0 text-sm"
+                      onClick={() => { setForgotMode(true); setResetRequested(false); }}
+                    >
+                      Forgot your password?
+                    </Button>
                   </TabsContent>
 
                   <TabsContent value="register" className="space-y-4">
+                    <form onSubmit={handleSubmit} className="space-y-4">
                     <div>
                       <Label htmlFor="register-name">Name</Label>
                       <Input
@@ -379,9 +463,11 @@ export default function LandingPage({ onLogin }) {
                     <Button data-testid="register-submit-btn" type="submit" className="w-full rounded-sm" disabled={loading}>
                       {loading ? 'Creating account...' : 'Create Account'}
                     </Button>
+                    </form>
                   </TabsContent>
-                </form>
-              </Tabs>
+                  </Tabs>
+                </>
+              )}
             </Card>
           </motion.div>
         </div>

@@ -28,8 +28,8 @@ BASE_URL = os.environ.get('REACT_APP_BACKEND_URL')
 assert BASE_URL, "REACT_APP_BACKEND_URL must be set"
 API = f"{BASE_URL.rstrip('/')}/api"
 
-OWNER_EMAIL = "bagmoneyceo@gmail.com"
-OWNER_PASSWORD = "Surfwall1"
+OWNER_EMAIL = os.environ.get("E2E_ADMIN_EMAIL")
+OWNER_PASSWORD = os.environ.get("E2E_ADMIN_PASSWORD")
 
 
 # ---------- helpers ----------
@@ -54,6 +54,8 @@ def _login(email, password):
 
 @pytest.fixture(scope="module")
 def owner_token():
+    if not OWNER_EMAIL or not OWNER_PASSWORD:
+        pytest.skip("Privileged E2E credentials are intentionally not stored in source control")
     r = _login(OWNER_EMAIL, OWNER_PASSWORD)
     assert r.status_code == 200, f"owner login: {r.status_code} {r.text}"
     return r.json()["token"]

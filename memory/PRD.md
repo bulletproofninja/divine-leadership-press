@@ -20,6 +20,22 @@ A book publishing / writing application that allows users to upload a Word doc, 
 - [x] Included `.gitignore` and GitHub-facing project files while excluding `.git/` repository history, `.emergent/` internals, dependencies, build output, and caches.
 - [x] Included sanitized backend/frontend `.env` files with key names preserved and values blank; removed test credentials and scanned the archive for common secret/token patterns.
 
+## Security Incident Response & Password Recovery (2026-09-14)
+- [x] Rotated the exposed owner password to an unshared random value, changed the owner email to `carlos@divinepublisher.com`, rotated the JWT signing secret, incremented the owner token version, and invalidated all prior sessions.
+- [x] Demoted eight disposable `TEST_*` accounts that had accumulated super-admin privileges; exactly one super-admin remains.
+- [x] Removed plaintext privileged credentials from current source files, test suites, test reports, and `/app/memory/test_credentials.md`.
+- [x] Added enumeration-safe `POST /api/auth/forgot-password`, 15-minute request throttling, HMAC-SHA256 reset-token hashes, 30-minute expiry, one-time consumption, and TTL indexes.
+- [x] Added `POST /api/auth/reset-password` and authenticated `PUT /api/auth/change-password` with a 12–128 character complexity policy and session invalidation.
+- [x] Added five-attempt / 15-minute login lockout and cleared failure counters after successful login.
+- [x] Added `HttpOnly`, `Secure`, `SameSite=Lax` auth cookies while preserving bearer-token compatibility; logout/reset/change clear the cookie.
+- [x] Removed the hardcoded JWT fallback. `JWT_SECRET`, `PASSWORD_RESET_PEPPER`, and `RESEND_API_KEY` are stored only in ignored runtime configuration.
+- [x] Locked CORS to explicit origins and normalized the trusted preview edge's rewritten Origin using its forwarded public host.
+- [x] Added Forgot Password login UI, public `/reset-password` route, and Settings → Password & sessions controls.
+- [x] Emergency single-use owner reset email successfully delivered to `security@divinepublisher.com` without exposing its token.
+- [x] Verification: 18/18 auth hardening tests passed, frontend production build passed, credential scan passed, and desktop/mobile overflow checks passed.
+- [ ] **External blocker:** verify `divinepublisher.com` at https://resend.com/domains before normal emails can send from `security@divinepublisher.com`.
+- [ ] GitHub history may retain the now-invalid historical credential even though current files are clean. Purge affected historical commits through GitHub's secret-removal workflow after saving this secure checkpoint.
+
 ## Implemented (2026-09-13) — PRIVATE FILE & MEDIA STORAGE
 - [x] Extended Emergent Object Storage to retain original `.docx` / `.txt` manuscript uploads, generated print PDFs, ePub files, cover PDFs, OpenAI/ElevenLabs audiobooks, and per-chapter audiobook ZIPs.
 - [x] Added MongoDB `document_files` registry with owner/document scope, canonical storage paths, MIME types, sizes, variants, timestamps, and soft-delete status.
@@ -209,6 +225,7 @@ A book publishing / writing application that allows users to upload a Word doc, 
 /app/
 ├── backend/
 │   ├── server.py          # FastAPI app: auth, documents, upload, export, AI, integrations
+│   ├── auth_security.py   # Password policy, reset-token hashing, Resend delivery
 │   ├── private_file_storage.py # Private manuscript/export/media object-storage helpers
 │   ├── exporters.py       # KDP_TRIM_SIZES, docx_to_html, generate_pdf, generate_epub
 │   ├── ai_editor.py       # Claude Sonnet 4.5 editorial tools (5 endpoints)
@@ -217,12 +234,15 @@ A book publishing / writing application that allows users to upload a Word doc, 
 │   └── requirements.txt   # + reportlab, beautifulsoup4, ebooklib, python-docx, emergentintegrations
 ├── frontend/src/pages/
 │   ├── LandingPage.js
+│   ├── ResetPasswordPage.js # Public single-use password reset screen
 │   ├── Dashboard.js       # upload accepts .docx/.txt/.pages
 │   └── EditorPage.js      # blob-download export, trim-size selector
 ```
 
 ## API Endpoints
-- `POST /api/auth/register | /login | GET /api/auth/me`
+- `POST /api/auth/register | /login | /logout | GET /api/auth/me`
+- `POST /api/auth/forgot-password | /reset-password`
+- `PUT /api/auth/change-password`
 - `GET|POST|PUT|DELETE /api/documents[/{id}]`
 - `POST /api/documents/upload` (.docx, .txt; .pages → 400 with guidance)
 - `GET /api/documents/{id}/files` → owner-scoped private file registry
@@ -251,4 +271,4 @@ A book publishing / writing application that allows users to upload a Word doc, 
 - P2: Add `DialogDescription` to dialogs to silence a11y warnings
 
 ## Test Credentials
-None pre-seeded. Tests register fresh users on the fly.
+No privileged password is stored in source control. Automated tests register and remove disposable `TEST_*` users; owner recovery uses the emailed reset flow.

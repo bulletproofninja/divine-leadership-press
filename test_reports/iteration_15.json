@@ -1,5 +1,5 @@
 {
-  "summary": "Iteration 15 fully verified. Owner account (Carlos Callahan / bagmoneyceo@gmail.com) login works and returns is_super_admin=true + referral_code. Extended affiliate settings schema (signup/MRR commission split, active_days_required, payout_method, stripe_connect_enabled, perks_description) is seeded to the user's exact spec (30/10/60d/active_subscription_60d/cash_and_perks/stripe_connect) and the public/admin GET+PUT endpoints validate properly. is_super_admin field is now present on every user-response shape (register, login, /auth/me, elevenlabs-set, elevenlabs-clear). Admin UI renders all 14 required testids for owner, shows the billing-warning, persists settings via PUT, and correctly blocks non-admins with a Lock card.",
+  "summary": "Iteration 15 affiliate administration was verified. Historical privileged login details were removed after the 2026-09-14 security rotation.",
   "backend_tests_run": "14/14 PASSED in /app/backend/tests/test_iter15_admin_affiliate.py (owner login, /auth/me, is_super_admin in register/login/elevenlabs responses, seeded settings match spec, PUT happy path + 4 validation 400s + 1 non-admin 403, leaderboard + badge regression)",
   "backend_issues": {
     "critical": [],
@@ -39,7 +39,7 @@
     "/app/backend/tests/test_iter15_admin_affiliate.py (new — 14 tests, 6 classes)"
   ],
   "success_rate": {"backend": "100% (14/14 new iter15 tests pass; 9/9 referral regression pass)", "frontend": "100% (all 8 UI assertions pass)"},
-  "test_credentials": "Owner: bagmoneyceo@gmail.com / Surfwall1 (verified working, /app/memory/test_credentials.md is accurate). Non-admin users registered on the fly with TEST_iter15_ / TEST_iter15ui_ prefix.",
+  "test_credentials": "Privileged credentials removed after security rotation. Non-admin users register on the fly with TEST_iter15_ / TEST_iter15ui_ prefixes.",
   "seed_data_creation": "Each backend run registers ~4 fresh TEST_iter15_* users (no cleanup needed — orphan users only). Admin-settings tests snapshot the global affiliate_settings doc at module load and restore at teardown so subsequent reads reflect the seeded spec.",
   "retest_needed": false,
   "main_agent_can_self_test": true,

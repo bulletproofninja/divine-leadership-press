@@ -22,7 +22,7 @@
     "/app/backend/tests/test_iter18_quota_refund.py (new — 4 tests)"
   ],
   "success_rate": {"backend": "100% (4/4 iter18 + 71/71 regression)", "frontend": "100% (HTML strip verified)"},
-  "test_credentials": "Owner bagmoneyceo@gmail.com / Surfwall1. Iter18 tests register fresh test_iter18_*@example.com users on the fly.",
+  "test_credentials": "Privileged credentials removed after security rotation. Iter18 tests register fresh test_iter18_*@example.com users on the fly.",
   "seed_data_creation": "Per-run: ~5 fresh test_iter18_* users, 1 document per user, and 1 direct TEST_iter18_refund_* agent_usage row that is deleted in the test's finally block.",
   "retest_needed": false,
   "main_agent_can_self_test": true,

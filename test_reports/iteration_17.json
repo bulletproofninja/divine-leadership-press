@@ -1,5 +1,5 @@
 {
-  "summary": "Full end-to-end audit — PASS. 37/37 iter17 audit tests pass and 34/34 iter16 billing regression tests still pass. Auth, docs CRUD, .docx upload, PDF/EPUB export (with real %PDF and PK magic bytes verified across two trim sizes), AI editor (tighten/clarity/blurb/copyedit + /ai/tools), Writing Agent (7 voices, chat history persist+clear, Cmd-K command), agent quota (5→4→3→2→1→0 then 402 with detail.code='agent_quota_exceeded'; unlimited:true when active subscription in `subscriptions` collection), per-chapter audiobook preview + 400 on 0/1 chapters, affiliate/referral (public settings, leaderboard, admin PUT gated, referred_by wired on register), LIVE Stripe (diagnostics {subscription_billing_configured, live_mode, webhook_secret_configured} all true; /billing/checkout produces real cs_live_ session, inserts payment_transactions row; status is 404 for other users; webhook returns 400 on bad signature; portal returns 400 when no customer on file), Stripe Connect (503 with dashboard.stripe.com hint on onboard, connected:false default, auto-payout 400 on empty ids, 'no_connect_account' in failed[] when referrer lacks account), and every /api/admin/* route 403s for non-super-admins. Frontend smoke: landing loads, login works via bagmoneyceo@gmail.com/Surfwall1, /dashboard renders 3 docs, /billing shows live-mode-banner + author_pro + estate plan cards, /help shows earnings-card + connect-onboard-btn, /editor/{id} shows agent-toggle-btn and the panel opens revealing agent-quota-pill displaying '5/5 FREE TODAY'. No blocking issues found.",
+  "summary": "Full end-to-end audit — PASS. Historical privileged login details were removed after the 2026-09-14 security rotation.",
   "backend_tests_run": "37/37 PASSED in /app/backend/tests/test_iter17_audit.py + 34/34 PASSED regression in /app/backend/tests/test_billing.py.",
   "backend_issues": {
     "critical": [],
@@ -37,7 +37,7 @@
     "/app/backend/tests/test_iter17_audit.py (new — 37 tests across 10 classes)"
   ],
   "success_rate": {"backend": "100% (37/37 new + 34/34 regression)", "frontend": "100% smoke"},
-  "test_credentials": "Owner bagmoneyceo@gmail.com / Surfwall1 verified working. Fresh users are registered on the fly with test_iter17_* prefix at @example.com (DLP's EmailStr validator rejects .test TLD).",
+  "test_credentials": "Privileged credentials removed after security rotation. Fresh users are registered on the fly with test_iter17_* prefix at @example.com.",
   "seed_data_creation": "Each run registers ~10 fresh test_iter17_* users, inserts ~1 test commissions row that is auto-deleted at test end, and creates ~5 small documents. One test creates a synthetic active subscription doc for the quota test and cleans it up in a finally block. A real cs_live_ Stripe Checkout session and one payment_transactions row are created per run (session is never completed — no real charge occurs).",
   "retest_needed": false,
   "main_agent_can_self_test": true,

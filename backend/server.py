@@ -3,6 +3,7 @@ from fastapi.responses import Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import ReturnDocument
 import os
 import asyncio
 import logging
@@ -14,6 +15,10 @@ import uuid
 from datetime import datetime, timezone, timedelta
 import bcrypt
 import jwt
+
+ROOT_DIR = Path(__file__).parent
+load_dotenv(ROOT_DIR / '.env')
+load_dotenv(ROOT_DIR / '.env.local', override=True)
 
 from exporters import (
     docx_to_html,
@@ -91,6 +96,18 @@ from private_file_storage import (
     safe_download_name,
     store_private_file,
 )
+from auth_security import (
+    LOGIN_FAILURE_LIMIT,
+    LOGIN_LOCK_MINUTES,
+    RESET_REQUEST_LIMIT,
+    RESET_REQUEST_WINDOW_MINUTES,
+    RESET_TOKEN_TTL_MINUTES,
+    hash_rate_limit_key,
+    hash_reset_token,
+    send_password_reset_email,
+    utc_now,
+    validate_new_password,
+)
 from transcription import transcribe_audio
 from image_to_pdf import image_to_pdf
 from chapter_audiobook import export_chapters_zip, split_into_chapters
@@ -114,9 +131,6 @@ from emergentintegrations.payments.stripe.checkout import (
 import subscription_billing as subs_billing
 import stripe  # for stripe.error.InvalidRequestError exception handling
 
-ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
-
 # Initialize Stripe SDK AFTER loading .env so STRIPE_SECRET_KEY is available
 subs_billing.init_stripe()
 
@@ -132,9 +146,11 @@ client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
 # JWT Configuration
-SECRET_KEY = os.environ.get('JWT_SECRET', 'divine-leadership-press-secret-key-2025')
+SECRET_KEY = os.environ['JWT_SECRET']
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_DAYS = 30
+AUTH_COOKIE_NAME = "access_token"
+AUTH_COOKIE_MAX_AGE = ACCESS_TOKEN_EXPIRE_DAYS * 24 * 60 * 60
 
 # Create the main app
 app = FastAPI()
@@ -162,6 +178,7 @@ class User(BaseModel):
     referral_code: Optional[str] = None
     referred_by: Optional[str] = None  # the referral_code of whoever referred this user
     is_super_admin: bool = False  # owner / platform admin
+    token_version: int = 0
     stripe_customer_id: Optional[str] = None  # set after first Stripe checkout
     stripe_connect_account_id: Optional[str] = None  # affiliate's Connect (Express) account
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -175,6 +192,24 @@ class UserRegister(BaseModel):
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(min_length=32, max_length=256)
+    new_password: str = Field(min_length=1, max_length=128)
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=1, max_length=128)
+
+
+class AuthMessageResponse(BaseModel):
+    message: str
 
 class UserResponse(BaseModel):
     id: str
@@ -523,22 +558,81 @@ def hash_password(password: str) -> str:
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
 
-def create_access_token(data: dict) -> str:
-    to_encode = data.copy()
+def create_access_token(user_id: str, token_version: int = 0) -> str:
+    to_encode = {"sub": user_id, "ver": int(token_version), "type": "access"}
     expire = datetime.now(timezone.utc) + timedelta(days=ACCESS_TOKEN_EXPIRE_DAYS)
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
-async def get_current_user(authorization: Optional[str] = Header(None)) -> User:
-    if not authorization or not authorization.startswith('Bearer '):
+
+def _set_auth_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key=AUTH_COOKIE_NAME,
+        value=token,
+        max_age=AUTH_COOKIE_MAX_AGE,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/api",
+    )
+
+
+def _clear_auth_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=AUTH_COOKIE_NAME,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/api",
+    )
+
+
+def _request_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+    return forwarded or (request.client.host if request.client else "unknown")
+
+
+def _auth_rate_key(kind: str, email: str, request: Request) -> str:
+    normalized = str(email).strip().lower()
+    return hash_rate_limit_key(f"{kind}:{_request_ip(request)}:{normalized}")
+
+
+async def _login_is_limited(identifier: str) -> bool:
+    cutoff = utc_now() - timedelta(minutes=LOGIN_LOCK_MINUTES)
+    count = await db.auth_login_failures.count_documents(
+        {"identifier": identifier, "created_at": {"$gte": cutoff}}
+    )
+    return count >= LOGIN_FAILURE_LIMIT
+
+
+async def _record_login_failure(identifier: str) -> None:
+    now = utc_now()
+    await db.auth_login_failures.insert_one(
+        {
+            "id": str(uuid.uuid4()),
+            "identifier": identifier,
+            "created_at": now,
+            "expires_at": now + timedelta(minutes=LOGIN_LOCK_MINUTES),
+        }
+    )
+
+async def get_current_user(
+    request: Request,
+    authorization: Optional[str] = Header(None),
+) -> User:
+    token = request.cookies.get(AUTH_COOKIE_NAME)
+    if not token and authorization and authorization.startswith('Bearer '):
+        token = authorization.split(' ', 1)[1]
+    if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    token = authorization.split(' ')[1]
+
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id = payload.get("sub")
         if user_id is None:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        if payload.get("type", "access") != "access":
             raise HTTPException(status_code=401, detail="Invalid token")
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
@@ -548,14 +642,17 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> User:
     user_doc = await db.users.find_one({"id": user_id}, {"_id": 0})
     if not user_doc:
         raise HTTPException(status_code=401, detail="User not found")
+    if int(payload.get("ver", 0)) != int(user_doc.get("token_version", 0)):
+        raise HTTPException(status_code=401, detail="Session expired. Please sign in again.")
     
     return User(**user_doc)
 
 # --- AUTH ROUTES ---
 
 @api_router.post("/auth/register", response_model=TokenResponse)
-async def register(user_data: UserRegister):
-    existing = await db.users.find_one({"email": user_data.email}, {"_id": 0})
+async def register(user_data: UserRegister, response: Response):
+    email = str(user_data.email).strip().lower()
+    existing = await db.users.find_one({"email": email}, {"_id": 0})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
 
@@ -569,7 +666,7 @@ async def register(user_data: UserRegister):
                 referred_by = code
 
     user = User(
-        email=user_data.email,
+        email=email,
         name=user_data.name,
         password_hash=hash_password(user_data.password),
         referral_code=_generate_referral_code(),
@@ -580,7 +677,8 @@ async def register(user_data: UserRegister):
     doc['created_at'] = doc['created_at'].isoformat()
     await db.users.insert_one(doc)
 
-    token = create_access_token({"sub": user.id})
+    token = create_access_token(user.id, user.token_version)
+    _set_auth_cookie(response, token)
     user_response = UserResponse(
         id=user.id,
         email=user.email,
@@ -597,9 +695,15 @@ async def register(user_data: UserRegister):
     return TokenResponse(token=token, user=user_response)
 
 @api_router.post("/auth/login", response_model=TokenResponse)
-async def login(credentials: UserLogin):
-    user_doc = await db.users.find_one({"email": credentials.email}, {"_id": 0})
+async def login(credentials: UserLogin, request: Request, response: Response):
+    email = str(credentials.email).strip().lower()
+    rate_key = _auth_rate_key("login", email, request)
+    if await _login_is_limited(rate_key):
+        raise HTTPException(status_code=429, detail="Too many sign-in attempts. Try again in 15 minutes.")
+
+    user_doc = await db.users.find_one({"email": email}, {"_id": 0})
     if not user_doc:
+        await _record_login_failure(rate_key)
         raise HTTPException(status_code=401, detail="Invalid credentials")
     
     if isinstance(user_doc['created_at'], str):
@@ -607,10 +711,17 @@ async def login(credentials: UserLogin):
     
     user = User(**user_doc)
     
-    if not verify_password(credentials.password, user.password_hash):
+    try:
+        password_valid = verify_password(credentials.password, user.password_hash)
+    except (ValueError, TypeError):
+        password_valid = False
+    if not password_valid:
+        await _record_login_failure(rate_key)
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    
-    token = create_access_token({"sub": user.id})
+
+    await db.auth_login_failures.delete_many({"identifier": rate_key})
+    token = create_access_token(user.id, user.token_version)
+    _set_auth_cookie(response, token)
     user_response = UserResponse(
         id=user.id,
         email=user.email,
@@ -625,6 +736,151 @@ async def login(credentials: UserLogin):
     )
     
     return TokenResponse(token=token, user=user_response)
+
+
+@api_router.post("/auth/forgot-password", response_model=AuthMessageResponse)
+async def forgot_password(payload: ForgotPasswordRequest, request: Request):
+    generic_message = "If an account exists for that email, a password reset link has been sent."
+    email = str(payload.email).strip().lower()
+    rate_key = _auth_rate_key("password-reset", email, request)
+    cutoff = utc_now() - timedelta(minutes=RESET_REQUEST_WINDOW_MINUTES)
+    recent_count = await db.auth_reset_requests.count_documents(
+        {"identifier": rate_key, "created_at": {"$gte": cutoff}}
+    )
+    if recent_count >= RESET_REQUEST_LIMIT:
+        return AuthMessageResponse(message=generic_message)
+
+    now = utc_now()
+    await db.auth_reset_requests.insert_one(
+        {
+            "id": str(uuid.uuid4()),
+            "identifier": rate_key,
+            "created_at": now,
+            "expires_at": now + timedelta(minutes=RESET_REQUEST_WINDOW_MINUTES),
+        }
+    )
+    user_doc = await db.users.find_one({"email": email}, {"_id": 0, "id": 1, "email": 1})
+    if not user_doc:
+        return AuthMessageResponse(message=generic_message)
+
+    raw_token = secrets.token_urlsafe(48)
+    token_hash = hash_reset_token(raw_token)
+    expires_at = now + timedelta(minutes=RESET_TOKEN_TTL_MINUTES)
+    await db.password_reset_tokens.update_many(
+        {"user_id": user_doc["id"], "used_at": None},
+        {"$set": {"used_at": now, "invalidated_reason": "superseded"}},
+    )
+    reset_record = {
+        "id": str(uuid.uuid4()),
+        "user_id": user_doc["id"],
+        "token_hash": token_hash,
+        "created_at": now,
+        "expires_at": expires_at,
+        "used_at": None,
+    }
+    await db.password_reset_tokens.insert_one({**reset_record})
+    try:
+        email_id = await send_password_reset_email(email, raw_token)
+        await db.password_reset_tokens.update_one(
+            {"id": reset_record["id"]},
+            {"$set": {"email_id": email_id, "sent_at": utc_now()}},
+        )
+    except Exception:
+        logger.exception("Password reset email delivery failed")
+        await db.password_reset_tokens.update_one(
+            {"id": reset_record["id"]},
+            {"$set": {"used_at": utc_now(), "invalidated_reason": "delivery_failed"}},
+        )
+    return AuthMessageResponse(message=generic_message)
+
+
+@api_router.post("/auth/reset-password", response_model=AuthMessageResponse)
+async def reset_password(payload: ResetPasswordRequest, response: Response):
+    try:
+        validate_new_password(payload.new_password)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    now = utc_now()
+    token_hash = hash_reset_token(payload.token)
+    reset_record = await db.password_reset_tokens.find_one_and_update(
+        {
+            "token_hash": token_hash,
+            "used_at": None,
+            "expires_at": {"$gt": now},
+        },
+        {"$set": {"used_at": now, "invalidated_reason": "consumed"}},
+        projection={"_id": 0},
+        return_document=ReturnDocument.BEFORE,
+    )
+    if not reset_record:
+        raise HTTPException(status_code=400, detail="This reset link is invalid or has expired.")
+
+    user_doc = await db.users.find_one(
+        {"id": reset_record["user_id"]}, {"_id": 0, "id": 1}
+    )
+    if not user_doc:
+        raise HTTPException(status_code=400, detail="This reset link is invalid or has expired.")
+    await db.users.update_one(
+        {"id": user_doc["id"]},
+        {
+            "$set": {
+                "password_hash": hash_password(payload.new_password),
+                "password_changed_at": now.isoformat(),
+            },
+            "$inc": {"token_version": 1},
+        },
+    )
+    await db.password_reset_tokens.update_many(
+        {"user_id": user_doc["id"], "used_at": None},
+        {"$set": {"used_at": now, "invalidated_reason": "password_changed"}},
+    )
+    _clear_auth_cookie(response)
+    return AuthMessageResponse(message="Password updated. You can now sign in with your new password.")
+
+
+@api_router.put("/auth/change-password", response_model=AuthMessageResponse)
+async def change_password(
+    payload: ChangePasswordRequest,
+    response: Response,
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        current_valid = verify_password(payload.current_password, current_user.password_hash)
+    except (ValueError, TypeError):
+        current_valid = False
+    if not current_valid:
+        raise HTTPException(status_code=400, detail="Current password is incorrect.")
+    if verify_password(payload.new_password, current_user.password_hash):
+        raise HTTPException(status_code=400, detail="New password must be different from the current password.")
+    try:
+        validate_new_password(payload.new_password)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    now = utc_now()
+    await db.users.update_one(
+        {"id": current_user.id},
+        {
+            "$set": {
+                "password_hash": hash_password(payload.new_password),
+                "password_changed_at": now.isoformat(),
+            },
+            "$inc": {"token_version": 1},
+        },
+    )
+    await db.password_reset_tokens.update_many(
+        {"user_id": current_user.id, "used_at": None},
+        {"$set": {"used_at": now, "invalidated_reason": "password_changed"}},
+    )
+    _clear_auth_cookie(response)
+    return AuthMessageResponse(message="Password changed. Please sign in again.")
+
+
+@api_router.post("/auth/logout", response_model=AuthMessageResponse)
+async def logout(response: Response):
+    _clear_auth_cookie(response)
+    return AuthMessageResponse(message="Signed out.")
 
 @api_router.get("/auth/me", response_model=UserResponse)
 async def get_me(current_user: User = Depends(get_current_user)):
@@ -3548,16 +3804,47 @@ async def publish_to_lulu(document_id: str, current_user: User = Depends(get_cur
 async def root():
     return {"message": "Divine Leadership Press API", "status": "running"}
 
+
 # Include router
 app.include_router(api_router)
+
+cors_origins = [
+    origin.strip().rstrip("/")
+    for origin in os.environ["CORS_ORIGINS"].split(",")
+    if origin.strip()
+]
+if not cors_origins or "*" in cors_origins:
+    raise RuntimeError("CORS_ORIGINS must contain explicit frontend origins when credentials are enabled")
+
+
+class ForwardedOriginMiddleware:
+    """Restore the public Origin when the trusted preview edge rewrites it internally."""
+
+    def __init__(self, app, allowed_origins):
+        self.app = app
+        self.allowed_origins = set(allowed_origins)
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http":
+            headers = list(scope.get("headers") or [])
+            header_map = {key.lower(): value for key, value in headers}
+            forwarded_host = header_map.get(b"x-forwarded-host", b"").decode("latin-1")
+            forwarded_proto = header_map.get(b"x-forwarded-proto", b"https").decode("latin-1")
+            public_origin = f"{forwarded_proto}://{forwarded_host}" if forwarded_host else ""
+            if public_origin in self.allowed_origins:
+                headers = [(key, value) for key, value in headers if key.lower() != b"origin"]
+                headers.append((b"origin", public_origin.encode("latin-1")))
+                scope = {**scope, "headers": headers}
+        await self.app(scope, receive, send)
 
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(ForwardedOriginMiddleware, allowed_origins=cors_origins)
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
@@ -3565,7 +3852,12 @@ async def shutdown_db_client():
 
 
 @app.on_event("startup")
-async def _init_storage_on_startup():
+async def _init_services_on_startup():
+    await db.users.create_index("email", unique=True)
+    await db.password_reset_tokens.create_index("token_hash", unique=True)
+    await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=0)
+    await db.auth_reset_requests.create_index("expires_at", expireAfterSeconds=0)
+    await db.auth_login_failures.create_index("expires_at", expireAfterSeconds=0)
     try:
         init_object_storage()
     except Exception as exc:

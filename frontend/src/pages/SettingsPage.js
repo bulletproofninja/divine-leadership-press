@@ -9,6 +9,7 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import {
   ArrowLeft, Key, Sparkles, Loader2, CheckCircle2, Trash2, ExternalLink, BotMessageSquare,
+  ShieldCheck,
 } from 'lucide-react';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -16,6 +17,7 @@ const API = `${BACKEND_URL}/api`;
 
 const getAuthHeaders = () => ({
   headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+  withCredentials: true,
 });
 
 const PROVIDER_META = {
@@ -148,6 +150,12 @@ export default function SettingsPage({ user, setUser }) {
   const [savingKey, setSavingKey] = useState(null);
   const [clearingKey, setClearingKey] = useState(null);
   const [savingPref, setSavingPref] = useState(false);
+  const [changingPassword, setChangingPassword] = useState(false);
+  const [passwordForm, setPasswordForm] = useState({
+    currentPassword: '',
+    newPassword: '',
+    confirmPassword: '',
+  });
 
   useEffect(() => {
     axios.get(`${API}/auth/me`, getAuthHeaders())
@@ -209,6 +217,33 @@ export default function SettingsPage({ user, setUser }) {
     }
   };
 
+  const changePassword = async (event) => {
+    event.preventDefault();
+    if (passwordForm.newPassword !== passwordForm.confirmPassword) {
+      return toast.error('New passwords do not match');
+    }
+    setChangingPassword(true);
+    try {
+      const response = await axios.put(
+        `${API}/auth/change-password`,
+        {
+          current_password: passwordForm.currentPassword,
+          new_password: passwordForm.newPassword,
+        },
+        getAuthHeaders(),
+      );
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
+      if (setUser) setUser(null);
+      toast.success(response.data.message);
+      navigate('/', { replace: true });
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Could not change password');
+    } finally {
+      setChangingPassword(false);
+    }
+  };
+
   const preferred = me?.preferred_llm_provider || 'anthropic';
   const anyKey = me?.has_openai_key || me?.has_anthropic_key;
 
@@ -225,8 +260,9 @@ export default function SettingsPage({ user, setUser }) {
           >
             <ArrowLeft className="h-4 w-4 mr-2" /> Back
           </Button>
-          <span className="font-heading text-sm uppercase tracking-[0.18em] text-primary">
-            Settings — AI Providers
+          <span data-testid="settings-header-title" className="font-heading text-sm uppercase tracking-[0.18em] text-primary text-center">
+            <span className="hidden sm:inline">Settings — Account & AI</span>
+            <span className="sm:hidden">Settings</span>
           </span>
           <div className="w-20" />
         </div>
@@ -235,8 +271,70 @@ export default function SettingsPage({ user, setUser }) {
       <div className="container mx-auto px-4 py-10 max-w-3xl">
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
           <h1 className="text-3xl sm:text-4xl font-heading font-semibold mb-2">
-            AI provider keys
+            Account settings
           </h1>
+          <p data-testid="settings-account-email" className="text-sm text-muted-foreground font-body mb-8 max-w-2xl">
+            Signed in as {me?.email || 'your account'}.
+          </p>
+
+          <Card data-testid="change-password-card" className="p-5 mb-10 border-l-4 border-l-primary">
+            <div className="flex items-start gap-3 mb-5">
+              <span className="p-2 bg-primary/10 text-primary flex-shrink-0">
+                <ShieldCheck className="h-5 w-5" />
+              </span>
+              <div>
+                <h2 className="text-lg font-heading font-semibold">Password & sessions</h2>
+                <p data-testid="change-password-help" className="text-xs text-muted-foreground mt-1">
+                  Changing your password signs out every active session. Use 12–128 characters with uppercase, lowercase, a number, and a symbol.
+                </p>
+              </div>
+            </div>
+            <form data-testid="change-password-form" onSubmit={changePassword} className="grid gap-4">
+              <div>
+                <Label htmlFor="current-password">Current password</Label>
+                <Input
+                  id="current-password"
+                  data-testid="change-password-current-input"
+                  type="password"
+                  autoComplete="current-password"
+                  value={passwordForm.currentPassword}
+                  onChange={(event) => setPasswordForm({ ...passwordForm, currentPassword: event.target.value })}
+                  required
+                />
+              </div>
+              <div className="grid sm:grid-cols-2 gap-4">
+                <div>
+                  <Label htmlFor="settings-new-password">New password</Label>
+                  <Input
+                    id="settings-new-password"
+                    data-testid="change-password-new-input"
+                    type="password"
+                    autoComplete="new-password"
+                    value={passwordForm.newPassword}
+                    onChange={(event) => setPasswordForm({ ...passwordForm, newPassword: event.target.value })}
+                    required
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="settings-confirm-password">Confirm password</Label>
+                  <Input
+                    id="settings-confirm-password"
+                    data-testid="change-password-confirm-input"
+                    type="password"
+                    autoComplete="new-password"
+                    value={passwordForm.confirmPassword}
+                    onChange={(event) => setPasswordForm({ ...passwordForm, confirmPassword: event.target.value })}
+                    required
+                  />
+                </div>
+              </div>
+              <Button data-testid="change-password-submit-button" type="submit" className="w-full sm:w-fit rounded-sm" disabled={changingPassword}>
+                {changingPassword ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Updating…</> : 'Change password'}
+              </Button>
+            </form>
+          </Card>
+
+          <h2 className="text-2xl font-heading font-semibold mb-2">AI provider keys</h2>
           <p className="text-sm text-muted-foreground font-body mb-8 max-w-2xl">
             Plug in your own OpenAI or Anthropic key and the writing agent (chat +
             Cmd-K) routes every call through your account — no daily quota, no

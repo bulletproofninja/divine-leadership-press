@@ -1,7 +1,7 @@
 """Iteration 15 — Owner account + extended affiliate settings schema + is_super_admin propagation.
 
 Covers:
-- Owner login (bagmoneyceo@gmail.com / Surfwall1) returns is_super_admin=True + referral_code
+- Owner login supplied through secure E2E environment variables returns is_super_admin=True + referral_code
 - GET /auth/me on owner token → is_super_admin: True
 - Public GET /api/affiliate/settings reflects seeded spec
 - PUT /api/admin/affiliate/settings happy + validation paths
@@ -20,8 +20,8 @@ BASE_URL = os.environ.get('REACT_APP_BACKEND_URL')
 assert BASE_URL, "REACT_APP_BACKEND_URL must be set"
 API = f"{BASE_URL.rstrip('/')}/api"
 
-OWNER_EMAIL = "bagmoneyceo@gmail.com"
-OWNER_PASSWORD = "Surfwall1"
+OWNER_EMAIL = os.environ.get("E2E_ADMIN_EMAIL")
+OWNER_PASSWORD = os.environ.get("E2E_ADMIN_PASSWORD")
 
 
 def _login(email, password):
@@ -41,6 +41,8 @@ def _register_user(suffix=None):
 
 @pytest.fixture(scope="module")
 def owner_token():
+    if not OWNER_EMAIL or not OWNER_PASSWORD:
+        pytest.skip("Privileged E2E credentials are intentionally not stored in source control")
     r = _login(OWNER_EMAIL, OWNER_PASSWORD)
     assert r.status_code == 200, f"Owner login failed: {r.status_code} {r.text}"
     body = r.json()
@@ -74,6 +76,8 @@ def snapshot_settings(owner_token):
 # --- Owner login + /auth/me ---
 class TestOwnerLogin:
     def test_owner_login_returns_super_admin_and_referral_code(self):
+        if not OWNER_EMAIL or not OWNER_PASSWORD:
+            pytest.skip("Privileged E2E credentials are intentionally not stored in source control")
         r = _login(OWNER_EMAIL, OWNER_PASSWORD)
         assert r.status_code == 200, r.text
         data = r.json()

@@ -28,7 +28,7 @@
     "/app/backend/tests/test_billing.py (new — 34 tests across 9 classes)"
   ],
   "success_rate": {"backend": "100% (34/34 new + 14/14 regression)", "frontend": "skipped per request"},
-  "test_credentials": "Owner bagmoneyceo@gmail.com / Surfwall1 verified; regular users registered on the fly with TEST_iter16_* prefix.",
+  "test_credentials": "Privileged credentials removed after security rotation; regular users register on the fly with TEST_iter16_* prefix.",
   "seed_data_creation": "Each module run registers ~3-4 fresh TEST_iter16_* users and creates ~5 small TEST_iter16_doc documents. Real Stripe test-mode session(s) created via /billing/checkout (no payment completed — session creation alone proves the integration). One payment_transactions row is inserted per test run; rows are status='initiated' and harmless to leave.",
   "retest_needed": false,
   "main_agent_can_self_test": true,

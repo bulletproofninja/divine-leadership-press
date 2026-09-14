@@ -1,0 +1,63 @@
+{
+  "summary": "Executed auth security validation across backend and UI for containment, password recovery/change, token invalidation, and responsive auth flows. Backend auth suite: 16 passed / 2 failed (auth cookie + CORS origin policy). UI flows passed for forgot/reset/settings, startup session revocation handling, and login/document/private-vault regression.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "/api/auth/login",
+        "issue": "No application auth httpOnly session cookie is set on login; only infra cookie (__cf_bm) appears. Test: test_login_sets_httponly_cookie.",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "CORS policy on /api/auth/*",
+        "issue": "CORS origin handling is inconsistent for credentialed auth calls (backend .env has CORS_ORIGINS='*', OPTIONS response origin mismatches public app origin). Test: test_cors_credentials_do_not_use_wildcard_origin.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "/api/auth/forgot-password (Resend integration)",
+        "issue": "Resend rejects TEST_* @example.com recipients in this environment; endpoint correctly returns generic message and does not expose raw reset token. External sender/domain verification remains a deployment dependency."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_password_recovery.py",
+    "/app/backend/tests/test_iter21_auth_hardening.py",
+    "/app/tests/seed_reset_token_iter21.py",
+    "/app/test_reports/pytest/iter21_password_recovery.xml",
+    "/app/test_reports/pytest/iter21_auth_hardening.xml",
+    "/app/test_reports/pytest/iter21_auth_suite.xml"
+  ],
+  "action_items": [
+    "Implement explicit application auth cookie strategy (httpOnly, Secure, SameSite, scoped domain/path) or adjust requirement/tests if Bearer-only is intentional.",
+    "Set explicit CORS_ORIGINS list for deployed frontend origins and keep allow_credentials=true without wildcard behavior.",
+    "Re-run iter21 auth suite after fixes: /app/backend/tests/test_password_recovery.py + /app/backend/tests/test_iter21_auth_hardening.py."
+  ],
+  "critical_code_review_comments": [
+    "JWT secret is env-only (no hardcoded fallback) and token_version invalidation is correctly enforced in get_current_user().",
+    "Password reset records are hash-only (token_hash), single-use, and TTL indexes exist for reset/login rate-limit collections.",
+    "Large monolithic backend file remains (>3000 lines), increasing auth/security change risk and regression surface."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_password_recovery.py",
+    "/app/backend/tests/test_iter21_auth_hardening.py",
+    "/app/tests/seed_reset_token_iter21.py",
+    "/app/test_reports/iteration_21.json"
+  ],
+  "success_rate": {
+    "backend": "89% (16/18)",
+    "frontend": "100% for tested auth/recovery/settings/responsive flows"
+  },
+  "test_credentials": "Used disposable TEST_* accounts only. Owner password/emergency owner reset token were not requested or used.",
+  "seed_data_creation": "Created disposable TEST_iter21_* and TEST_ui_* users, plus seeded disposable password_reset_tokens for UI reset-route completion validation.",
+  "retest_needed": true,
+  "main_agent_can_self_test": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Key failures are reproducible via /app/backend/tests/test_iter21_auth_hardening.py (cookie + CORS tests). UI auth flows validated end-to-end, including reset route completion using a seeded disposable token. Do not use owner emergency token.",
+  "rca_of_the_issue": "RCA-1 (auth cookie): login currently returns JWT in JSON body and does not set an app session cookie; observed Set-Cookie is Cloudflare __cf_bm only. RCA-2 (CORS): config allows credentials but origin handling is inconsistent due wildcard/default and environment-origin mismatch, causing policy non-compliance risk for credentialed auth flows. Resend blocker observed is external domain/sender/recipient policy, while endpoint behavior remains generic and non-leaky."
+}

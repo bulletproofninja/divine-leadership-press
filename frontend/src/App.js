@@ -2,6 +2,7 @@ import '@/App.css';
 import 'react-quill-new/dist/quill.snow.css';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { useState, useEffect } from 'react';
+import axios from 'axios';
 import LandingPage from './pages/LandingPage';
 import Dashboard from './pages/Dashboard';
 import EditorPage from './pages/EditorPage';
@@ -12,6 +13,7 @@ import BillingSuccess from './pages/BillingSuccess';
 import AdminCommissionsPage from './pages/AdminCommissionsPage';
 import AffiliateConnectReturn from './pages/AffiliateConnectReturn';
 import SettingsPage from './pages/SettingsPage';
+import ResetPasswordPage from './pages/ResetPasswordPage';
 import { Toaster } from './components/ui/sonner';
 
 function App() {
@@ -20,12 +22,24 @@ function App() {
 
   useEffect(() => {
     const token = localStorage.getItem('token');
-    const userData = localStorage.getItem('user');
-    
-    if (token && userData) {
-      setUser(JSON.parse(userData));
+    if (!token) {
+      setLoading(false);
+      return;
     }
-    setLoading(false);
+    axios.get(`${process.env.REACT_APP_BACKEND_URL}/api/auth/me`, {
+      headers: { Authorization: `Bearer ${token}` },
+      withCredentials: true,
+    })
+      .then((response) => {
+        localStorage.setItem('user', JSON.stringify(response.data));
+        setUser(response.data);
+      })
+      .catch(() => {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        setUser(null);
+      })
+      .finally(() => setLoading(false));
   }, []);
 
   const handleLogin = (token, userData) => {
@@ -34,10 +48,18 @@ function App() {
     setUser(userData);
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
-    setUser(null);
+  const handleLogout = async () => {
+    try {
+      await axios.post(
+        `${process.env.REACT_APP_BACKEND_URL}/api/auth/logout`,
+        {},
+        { withCredentials: true },
+      );
+    } finally {
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
+      setUser(null);
+    }
   };
 
   if (loading) {
@@ -84,6 +106,7 @@ function App() {
             }
           />
           <Route path="/help" element={<HelpPage />} />
+          <Route path="/reset-password" element={<ResetPasswordPage />} />
           <Route
             path="/billing"
             element={

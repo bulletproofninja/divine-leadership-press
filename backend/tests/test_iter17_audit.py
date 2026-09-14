@@ -29,8 +29,8 @@ import requests
 BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://editorial-studio-19.preview.emergentagent.com").rstrip("/")
 API = f"{BASE_URL}/api"
 
-ADMIN_EMAIL = "bagmoneyceo@gmail.com"
-ADMIN_PASS = "Surfwall1"
+ADMIN_EMAIL = os.environ.get("E2E_ADMIN_EMAIL")
+ADMIN_PASS = os.environ.get("E2E_ADMIN_PASSWORD")
 
 
 # ---------- helpers ----------
@@ -60,6 +60,8 @@ def _headers(token):
 
 @pytest.fixture(scope="session")
 def admin_token():
+    if not ADMIN_EMAIL or not ADMIN_PASS:
+        pytest.skip("Privileged E2E credentials are intentionally not stored in source control")
     tok = _login(ADMIN_EMAIL, ADMIN_PASS)["token"]
     return tok
 
