@@ -16,10 +16,12 @@ from reportlab.lib.pagesizes import inch
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT, TA_JUSTIFY
 from reportlab.lib.units import inch as INCH
+from reportlab.pdfgen import canvas
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, PageBreak, Image as RLImage
 )
 from reportlab.platypus.tableofcontents import TableOfContents
+from PyPDF2 import PdfReader, PdfWriter
 
 
 # All standard Amazon KDP trim sizes (width x height in inches)
@@ -271,7 +273,7 @@ def generate_pdf(
     trim_key: str = "6x9",
     publisher: Optional[str] = None,
 ) -> bytes:
-    """Render the document to a publishing-grade PDF at the given KDP trim size."""
+    """Render a book PDF with independent front-matter and body pagination."""
     trim_w, trim_h = get_trim_size(trim_key)
     styles = _build_pdf_styles(trim_w, trim_h)
 
@@ -281,44 +283,100 @@ def generate_pdf(
     top_margin = 0.75 * INCH
     bottom_margin = 0.75 * INCH
 
-    buf = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buf,
-        pagesize=(trim_w, trim_h),
-        leftMargin=inner_margin,
-        rightMargin=outer_margin,
-        topMargin=top_margin,
-        bottomMargin=bottom_margin,
-        title=title,
-        author=author or "",
+    def render_story(story: List) -> bytes:
+        section_buf = io.BytesIO()
+        section_doc = SimpleDocTemplate(
+            section_buf,
+            pagesize=(trim_w, trim_h),
+            leftMargin=inner_margin,
+            rightMargin=outer_margin,
+            topMargin=top_margin,
+            bottomMargin=bottom_margin,
+            title=title,
+            author=author or "",
+        )
+        section_doc.build(story)
+        return section_buf.getvalue()
+
+    title_story: List = [Paragraph(escape(title or "Untitled"), styles["title"])]
+    if author:
+        title_story.append(Paragraph(escape(author), styles["subtitle"]))
+    if publisher:
+        title_story.extend([
+            Spacer(1, trim_h * 0.05),
+            Paragraph(escape(publisher), styles["subtitle"]),
+        ])
+
+    front_html, body_html = _split_front_and_body(html_content or "")
+    sections = [(render_story(title_story), None)]
+    front_story = _html_to_rl_flowables(front_html, styles)
+    body_story = _html_to_rl_flowables(body_html, styles)
+    if front_story:
+        sections.append((render_story(front_story), "roman"))
+    if body_story:
+        sections.append((render_story(body_story), "arabic"))
+
+    writer = PdfWriter()
+    for pdf_bytes, numbering in sections:
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        for index, page in enumerate(reader.pages, start=1):
+            if numbering:
+                label = _to_roman(index).lower() if numbering == "roman" else str(index)
+                page.merge_page(_page_number_overlay(label, trim_w, trim_h))
+            writer.add_page(page)
+    output = io.BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+
+FRONT_MATTER_HEADINGS = {
+    "half title", "title page", "copyright", "dedication", "epigraph",
+    "contents", "table of contents", "foreword", "preface",
+    "acknowledgments", "acknowledgements", "about the author",
+}
+
+
+def _split_front_and_body(html_content: str) -> Tuple[str, str]:
+    """Split at the first H1 that is not a recognized front-matter heading."""
+    soup = BeautifulSoup(html_content or "", "html.parser")
+    nodes = list(soup.children)
+    body_index = None
+    for index, node in enumerate(nodes):
+        if getattr(node, "name", "") != "h1":
+            continue
+        heading = re.sub(r"\s+", " ", node.get_text(" ", strip=True)).lower()
+        if heading not in FRONT_MATTER_HEADINGS:
+            body_index = index
+            break
+    if body_index is None:
+        return "", str(soup)
+    return (
+        "".join(str(node) for node in nodes[:body_index]),
+        "".join(str(node) for node in nodes[body_index:]),
     )
 
-    story: List = []
 
-    # Title page
-    story.append(Paragraph(escape(title or "Untitled"), styles["title"]))
-    if author:
-        story.append(Paragraph(escape(author), styles["subtitle"]))
-    if publisher:
-        story.append(Spacer(1, trim_h * 0.05))
-        story.append(Paragraph(escape(publisher), styles["subtitle"]))
-    story.append(PageBreak())
+def _to_roman(number: int) -> str:
+    values = ((1000, "M"), (900, "CM"), (500, "D"), (400, "CD"),
+              (100, "C"), (90, "XC"), (50, "L"), (40, "XL"),
+              (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I"))
+    result = []
+    for value, numeral in values:
+        while number >= value:
+            result.append(numeral)
+            number -= value
+    return "".join(result)
 
-    # Body
-    story.extend(_html_to_rl_flowables(html_content or "", styles))
 
-    def _footer(canvas, doc_):
-        canvas.saveState()
-        canvas.setFont("Times-Roman", 9)
-        canvas.setFillColorRGB(0.4, 0.4, 0.4)
-        page_num = doc_.page
-        # Skip page number on title page
-        if page_num > 1:
-            canvas.drawCentredString(trim_w / 2.0, 0.4 * INCH, str(page_num - 1))
-        canvas.restoreState()
-
-    doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
-    return buf.getvalue()
+def _page_number_overlay(label: str, page_w: float, page_h: float):
+    overlay = io.BytesIO()
+    number_canvas = canvas.Canvas(overlay, pagesize=(page_w, page_h))
+    number_canvas.setFont("Times-Roman", 9)
+    number_canvas.setFillColorRGB(0.4, 0.4, 0.4)
+    number_canvas.drawCentredString(page_w / 2.0, 0.4 * INCH, label)
+    number_canvas.save()
+    overlay.seek(0)
+    return PdfReader(overlay).pages[0]
 
 
 # ---------------------------------------------------------------------------

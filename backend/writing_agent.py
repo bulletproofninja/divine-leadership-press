@@ -22,6 +22,7 @@ import uuid
 from typing import List, Optional
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
+from house_style import EDITORIAL_POLICY, remove_em_dashes
 
 # Default provider + model per provider.
 DEFAULT_PROVIDER = "anthropic"
@@ -108,16 +109,17 @@ BASE_SYSTEM_PROMPT = (
     "century-old publishing house. You help authors draft, brainstorm, edit, "
     "and formalize their ideas in real time.\n\n"
     "Operating principles:\n"
-    "  • Respect the author's voice — never override it without being asked.\n"
+    "  • Respect the author's voice; never override it without being asked.\n"
     "  • Default to brevity. If a question can be answered in a sentence, do "
     "    that; if asked to draft, draft the requested length.\n"
     "  • When the author asks you to rewrite or draft prose, return prose only "
-    "    — no preamble, no 'Here is...' phrases, no meta-commentary.\n"
+    "    with no preamble, introductory phrases, or meta-commentary.\n"
     "  • When the author asks a question, answer plainly and end with a single, "
     "    sharp follow-up question if it would meaningfully advance the work.\n"
     "  • Never invent biographical facts about the author. If you need a name, "
     "    date, or quote you don't have, ask.\n"
-    "  • If the manuscript is empty, help the author find their first sentence."
+    "  • If the manuscript is empty, help the author find their first sentence.\n\n"
+    + EDITORIAL_POLICY
 )
 
 
@@ -151,7 +153,7 @@ def _voice_directive(voice: Optional[str], voice_sample: Optional[str]) -> str:
     preset = VOICE_PRESETS.get(voice)
     if not preset:
         return "VOICE: Neutral, literary register.\n"
-    return f"VOICE: {preset['label']} — {preset['description']}\n"
+    return f"VOICE: {preset['label']}. {preset['description']}\n"
 
 
 def _build_system_prompt(
@@ -168,13 +170,13 @@ def _build_system_prompt(
     if document_text:
         snippet = _truncate(document_text, 12000)
         parts.append(
-            "CURRENT MANUSCRIPT (plain text — author may reference passages):\n"
+            "CURRENT MANUSCRIPT (plain text; author may reference passages):\n"
             "---\n"
             f"{snippet}\n"
             "---\n"
         )
     else:
-        parts.append("CURRENT MANUSCRIPT: (empty — the page is blank)\n")
+        parts.append("CURRENT MANUSCRIPT: (empty; the page is blank)\n")
     return "\n".join(parts)
 
 
@@ -239,7 +241,7 @@ async def agent_chat(
     )
 
     response = await chat.send_message(UserMessage(text=final_prompt))
-    return (response or "").strip()
+    return remove_em_dashes((response or "").strip())
 
 
 # ---------------------------------------------------------------------------
@@ -248,10 +250,10 @@ async def agent_chat(
 INLINE_SYSTEM_PROMPT = (
     "You are the in-house writing partner at Divine Leadership Press. The "
     "author has highlighted a passage and given you a one-line instruction. "
-    "Return ONLY the rewritten passage — no preamble, no commentary, no quote "
+    "Return ONLY the rewritten passage, with no preamble, commentary, or quote "
     "marks around it. Preserve any markdown / inline formatting present in the "
     "input. If the instruction asks for an EXPANSION, the result may be longer; "
-    "otherwise keep similar length."
+    "otherwise keep similar length.\n\n" + EDITORIAL_POLICY
 )
 
 
@@ -301,4 +303,4 @@ async def run_inline_command(
         "Rewrite the passage now. Return only the new passage."
     )
     response = await chat.send_message(UserMessage(text=prompt))
-    return (response or "").strip()
+    return remove_em_dashes((response or "").strip())

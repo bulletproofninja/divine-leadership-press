@@ -11,7 +11,7 @@ import { toast } from 'sonner';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
-const LOGO_URL = 'https://customer-assets.emergentagent.com/job_book-press/artifacts/gwdawx4q_Divine%20Leadership%20Press%20Emblem%281%29.png';
+const LOGO_URL = '/brand/divine-leadership-press-emblem.png';
 
 export default function LandingPage({ onLogin }) {
   const [showAuth, setShowAuth] = useState(false);
@@ -436,10 +436,14 @@ export default function LandingPage({ onLogin }) {
                         data-testid="register-password-input"
                         type="password"
                         placeholder="••••••••"
+                        minLength={12}
                         value={formData.password}
                         onChange={(e) => setFormData({ ...formData, password: e.target.value })}
                         required
                       />
+                      <p className="text-[11px] text-muted-foreground mt-1">
+                        Use 12 or more characters with uppercase, lowercase, a number, and a symbol.
+                      </p>
                     </div>
                     <div>
                       <Label htmlFor="register-referral">
