@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { CheckCircle2, KeyRound, Loader2 } from 'lucide-react';
@@ -17,6 +17,11 @@ export default function ResetPasswordPage() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [complete, setComplete] = useState(false);
+
+  useEffect(() => {
+    if (!token) return;
+    window.history.replaceState({}, document.title, '/reset-password');
+  }, [token]);
 
   const submit = async (event) => {
     event.preventDefault();

@@ -15,6 +15,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 import bcrypt
 import jwt
+import httpx
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -110,6 +111,7 @@ from auth_security import (
 )
 from transcription import transcribe_audio
 from image_to_pdf import image_to_pdf
+from cover_spread import calculate_cover_dimensions, generate_cover_spread
 from chapter_audiobook import export_chapters_zip, split_into_chapters
 from billing import (
     PLANS,
@@ -130,6 +132,8 @@ from emergentintegrations.payments.stripe.checkout import (
 )
 import subscription_billing as subs_billing
 import stripe  # for stripe.error.InvalidRequestError exception handling
+from secrets_vault import decrypt_secret, encrypt_secret
+from fulfillment import PROVIDERS as FULFILLMENT_PROVIDERS, publishing_readiness
 
 # Initialize Stripe SDK AFTER loading .env so STRIPE_SECRET_KEY is available
 subs_billing.init_stripe()
@@ -146,7 +150,9 @@ client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
 # JWT Configuration
-SECRET_KEY = os.environ['JWT_SECRET']
+SECRET_KEY = (os.environ.get('JWT_SECRET') or '').strip()
+if len(SECRET_KEY) < 32:
+    raise RuntimeError('JWT_SECRET must be configured with at least 32 characters.')
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_DAYS = 30
 AUTH_COOKIE_NAME = "access_token"
@@ -186,7 +192,7 @@ class User(BaseModel):
 class UserRegister(BaseModel):
     email: EmailStr
     name: str
-    password: str
+    password: str = Field(min_length=8, max_length=128)
     referral_code: Optional[str] = None  # optional invite code
 
 class UserLogin(BaseModel):
@@ -550,6 +556,20 @@ class CommentCreate(BaseModel):
     content: str
     position: Optional[int] = None
 
+
+class FulfillmentOrderCreate(BaseModel):
+    document_id: str
+    provider: str = "lulu"
+    quantity: int = Field(default=1, ge=1, le=5000)
+    recipient_name: str = Field(min_length=2, max_length=120)
+    address_line_1: str = Field(min_length=3, max_length=200)
+    address_line_2: Optional[str] = Field(default=None, max_length=200)
+    city: str = Field(min_length=2, max_length=100)
+    state: str = Field(min_length=2, max_length=100)
+    postal_code: str = Field(min_length=3, max_length=20)
+    country_code: str = Field(default="US", min_length=2, max_length=2)
+    shipping_level: str = "mail"
+
 # --- AUTH HELPERS ---
 
 def hash_password(password: str) -> str:
@@ -589,8 +609,9 @@ def _clear_auth_cookie(response: Response) -> None:
 
 
 def _request_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-    return forwarded or (request.client.host if request.client else "unknown")
+    # Do not trust a caller-supplied forwarding header for authentication
+    # throttling. The email is also part of the hashed rate-limit identifier.
+    return request.client.host if request.client else "unknown"
 
 
 def _auth_rate_key(kind: str, email: str, request: Request) -> str:
@@ -636,7 +657,7 @@ async def get_current_user(
             raise HTTPException(status_code=401, detail="Invalid token")
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
-    except jwt.JWTError:
+    except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
     
     user_doc = await db.users.find_one({"id": user_id}, {"_id": 0})
@@ -645,12 +666,18 @@ async def get_current_user(
     if int(payload.get("ver", 0)) != int(user_doc.get("token_version", 0)):
         raise HTTPException(status_code=401, detail="Session expired. Please sign in again.")
     
+    for field in ("elevenlabs_api_key", "openai_api_key", "anthropic_api_key"):
+        user_doc[field] = decrypt_secret(user_doc.get(field))
     return User(**user_doc)
 
 # --- AUTH ROUTES ---
 
 @api_router.post("/auth/register", response_model=TokenResponse)
 async def register(user_data: UserRegister, response: Response):
+    try:
+        validate_new_password(user_data.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     email = str(user_data.email).strip().lower()
     existing = await db.users.find_one({"email": email}, {"_id": 0})
     if existing:
@@ -1967,6 +1994,28 @@ class PreferredProviderRequest(BaseModel):
     provider: str  # "openai" | "anthropic"
 
 
+async def _test_llm_provider_key(provider: str, api_key: str) -> dict:
+    """Validate a saved provider key without generating text or spending tokens."""
+    if provider == "openai":
+        url = "https://api.openai.com/v1/models"
+        headers = {"Authorization": f"Bearer {api_key}"}
+    elif provider == "anthropic":
+        url = "https://api.anthropic.com/v1/models?limit=1"
+        headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
+    else:
+        raise HTTPException(status_code=400, detail="Unknown AI provider.")
+    try:
+        async with httpx.AsyncClient(timeout=12.0) as client:
+            response = await client.get(url, headers=headers)
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=503, detail=f"Could not reach {provider.title()}: {exc}")
+    if response.status_code in (401, 403):
+        raise HTTPException(status_code=400, detail=f"{provider.title()} rejected this API key.")
+    if response.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"{provider.title()} connection test returned HTTP {response.status_code}.")
+    return {"connected": True, "provider": provider, "uses_generation_credits": False}
+
+
 def _user_response_from(user: User) -> "UserResponse":
     return UserResponse(
         id=user.id,
@@ -2004,7 +2053,7 @@ async def set_openai_key(
         raise HTTPException(status_code=400, detail="OpenAI API key looks invalid (expected sk-... at least 20 chars).")
     await db.users.update_one(
         {"id": current_user.id},
-        {"$set": {"openai_api_key": key}},
+        {"$set": {"openai_api_key": encrypt_secret(key)}},
     )
     current_user.openai_api_key = key
     return _user_response_from(current_user)
@@ -2030,7 +2079,7 @@ async def set_anthropic_key(
         raise HTTPException(status_code=400, detail="Anthropic API key looks invalid (expected sk-... at least 20 chars).")
     await db.users.update_one(
         {"id": current_user.id},
-        {"$set": {"anthropic_api_key": key}},
+        {"$set": {"anthropic_api_key": encrypt_secret(key)}},
     )
     current_user.anthropic_api_key = key
     return _user_response_from(current_user)
@@ -2044,6 +2093,21 @@ async def clear_anthropic_key(current_user: User = Depends(get_current_user)):
     )
     current_user.anthropic_api_key = None
     return _user_response_from(current_user)
+
+
+@api_router.post("/auth/me/{provider}-key/test")
+async def test_saved_llm_key(
+    provider: str,
+    current_user: User = Depends(get_current_user),
+):
+    provider = (provider or "").strip().lower()
+    key = {
+        "openai": current_user.openai_api_key,
+        "anthropic": current_user.anthropic_api_key,
+    }.get(provider)
+    if not key:
+        raise HTTPException(status_code=400, detail=f"Save a {provider.title()} API key first.")
+    return await _test_llm_provider_key(provider, key)
 
 
 @api_router.put("/auth/me/preferred-provider", response_model=UserResponse)
@@ -2072,7 +2136,7 @@ async def set_elevenlabs_key(
         raise HTTPException(status_code=400, detail="ElevenLabs API key looks invalid.")
     await db.users.update_one(
         {"id": current_user.id},
-        {"$set": {"elevenlabs_api_key": key}},
+        {"$set": {"elevenlabs_api_key": encrypt_secret(key)}},
     )
     return UserResponse(
         id=current_user.id,
@@ -2337,6 +2401,7 @@ async def download_private_document_file(
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
             "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
         },
     )
 
@@ -2770,7 +2835,7 @@ async def run_ai_edit(
 
 class CopyEditRequest(BaseModel):
     content: Optional[str] = None
-    style_guide: Optional[str] = "chicago"
+    style_guide: Optional[str] = "house"
 
 
 @api_router.get("/copyedit/style-guides")
@@ -2794,9 +2859,9 @@ async def run_copyedit(
     if not html_content.strip():
         raise HTTPException(status_code=400, detail="Document is empty — add content before running the copy editor.")
 
-    style_guide = (payload.style_guide or "chicago").lower()
+    style_guide = (payload.style_guide or "house").lower()
     if style_guide not in STYLE_GUIDES:
-        style_guide = "chicago"
+        style_guide = "house"
 
     try:
         result = await run_copyedit_pass(html_content=html_content, style_guide=style_guide)
@@ -3358,10 +3423,75 @@ async def remove_cover(
 
 # --- COVER PDF (for KDP paperback submission) ---
 
+@api_router.get("/cover/spread/specs")
+async def cover_spread_specs(
+    trim: str = "6x9",
+    page_count: int = 100,
+    paper_type: str = "black_white",
+):
+    try:
+        return calculate_cover_dimensions(trim, page_count, paper_type).to_dict()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@api_router.post("/documents/{document_id}/cover/spread")
+async def document_cover_spread(
+    document_id: str,
+    back_cover: UploadFile = File(...),
+    trim: Optional[str] = None,
+    page_count: Optional[int] = None,
+    paper_type: str = "black_white",
+    reserve_barcode: bool = True,
+    current_user: User = Depends(get_current_user),
+):
+    doc = await db.documents.find_one(
+        {"id": document_id, "user_id": current_user.id}, {"_id": 0}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    front_upload = find_cover_upload(doc)
+    if not front_upload:
+        raise HTTPException(status_code=404, detail="Upload the front cover first.")
+    back_bytes = await back_cover.read()
+    if len(back_bytes) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Back cover image is too large. Maximum size is 20 MB.")
+    metadata = doc.get("metadata") or {}
+    resolved_pages = page_count or metadata.get("page_count")
+    if not resolved_pages:
+        raise HTTPException(status_code=400, detail="Enter the final formatted page count.")
+    trim_key = (trim or doc.get("format") or "6x9").strip()
+    try:
+        pdf_bytes, dimensions = generate_cover_spread(
+            front_image_bytes=fetch_cover_bytes(front_upload["storage_path"]),
+            back_image_bytes=back_bytes,
+            trim_key=trim_key,
+            page_count=int(resolved_pages),
+            paper_type=paper_type,
+            title=doc.get("title") or "Untitled",
+            author=metadata.get("author") or "",
+            reserve_barcode=reserve_barcode,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", doc.get("title") or "book").strip("_") or "book"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_name}_full_cover_{trim_key}.pdf"',
+            "X-Cover-Width": str(dimensions.cover_width),
+            "X-Cover-Height": str(dimensions.cover_height),
+            "X-Spine-Width": str(dimensions.spine_width),
+            "X-Spine-Text": "allowed" if dimensions.spine_text_allowed else "omitted",
+        },
+    )
+
 @api_router.post("/documents/{document_id}/cover/pdf")
 async def cover_to_pdf(
     document_id: str,
     trim: Optional[str] = None,
+    include_bleed: bool = True,
     current_user: User = Depends(get_current_user),
 ):
     doc = await db.documents.find_one(
@@ -3384,7 +3514,8 @@ async def cover_to_pdf(
         pdf_bytes = image_to_pdf(
             image_bytes=fetch_cover_bytes(upload["storage_path"]),
             trim_key=trim_key,
-            title=f"{title} — Cover",
+            title=f"{title}: Cover",
+            include_bleed=include_bleed,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -3410,6 +3541,8 @@ async def cover_to_pdf(
             "X-Trim-Size": trim_key,
             "X-Stored-File-Id": stored_file.id,
             "Cache-Control": "private, no-store",
+            "X-Bleed": "0.125in" if include_bleed else "none",
+            "X-Content-Type-Options": "nosniff",
         },
     )
 
@@ -3768,7 +3901,52 @@ async def export_document(
     raise HTTPException(status_code=400, detail=f"Unsupported export format: {format}")
 
 
-# --- PUBLISHING PARTNER ROUTES (preparation only, not direct API integrations) ---
+# --- PRINT FULFILLMENT AND RETAIL DISTRIBUTION ---
+@api_router.get("/publishing/providers")
+async def list_publishing_providers(current_user: User = Depends(get_current_user)):
+    return {"providers": FULFILLMENT_PROVIDERS}
+
+
+@api_router.get("/publishing/readiness/{document_id}")
+async def get_publishing_readiness(document_id: str, current_user: User = Depends(get_current_user)):
+    doc = await db.documents.find_one({"id": document_id, "user_id": current_user.id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"document_id": document_id, **publishing_readiness(doc)}
+
+
+@api_router.post("/publishing/orders", status_code=201)
+async def create_fulfillment_order(order: FulfillmentOrderCreate, current_user: User = Depends(get_current_user)):
+    if order.provider != "lulu":
+        raise HTTPException(status_code=400, detail="Direct orders currently support Lulu only")
+    if order.shipping_level not in {"mail", "priority", "express"}:
+        raise HTTPException(status_code=400, detail="Unsupported shipping level")
+    doc = await db.documents.find_one({"id": order.document_id, "user_id": current_user.id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    readiness = publishing_readiness(doc)
+    if not readiness["direct_print_ready"]:
+        required = {"manuscript", "author", "cover", "interior_pdf", "title"}
+        missing = [item["label"] for item in readiness["checks"] if not item["complete"] and item["key"] in required]
+        raise HTTPException(status_code=409, detail={"message": "Book is not ready for print ordering", "missing": missing})
+    now = datetime.now(timezone.utc)
+    record = {
+        "id": str(uuid.uuid4()), "user_id": current_user.id, **order.model_dump(),
+        "country_code": order.country_code.upper(), "status": "draft",
+        "provider_order_id": None, "created_at": now, "updated_at": now,
+    }
+    await db.fulfillment_orders.insert_one(record.copy())
+    record.pop("user_id", None)
+    return record
+
+
+@api_router.get("/publishing/orders")
+async def list_fulfillment_orders(current_user: User = Depends(get_current_user)):
+    rows = await db.fulfillment_orders.find({"user_id": current_user.id}, {"_id": 0, "user_id": 0}).sort("created_at", -1).to_list(100)
+    return {"orders": rows}
+
+
+# Preparation routes retained for compatibility with existing clients.
 @api_router.post("/integrations/kdp")
 async def publish_to_kdp(document_id: str, current_user: User = Depends(get_current_user)):
     doc = await db.documents.find_one({"id": document_id, "user_id": current_user.id}, {"_id": 0})

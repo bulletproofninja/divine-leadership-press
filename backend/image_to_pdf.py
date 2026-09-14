@@ -27,8 +27,10 @@ def image_to_pdf(
     image_bytes: bytes,
     trim_key: Optional[str] = "6x9",
     title: Optional[str] = "Cover",
+    include_bleed: bool = False,
+    bleed_inches: float = 0.125,
 ) -> bytes:
-    """Render the image onto a PDF page sized to the KDP trim, preserving aspect ratio."""
+    """Render a proportional, edge-to-edge cover with optional printer bleed."""
     if not image_bytes:
         raise ValueError("No image data provided.")
     try:
@@ -45,7 +47,9 @@ def image_to_pdf(
     elif img.mode != "RGB":
         img = img.convert("RGB")
 
-    page_w, page_h = _trim_to_points(trim_key or "6x9")
+    trim_w, trim_h = _trim_to_points(trim_key or "6x9")
+    bleed = max(0.0, float(bleed_inches)) * INCH if include_bleed else 0
+    page_w, page_h = trim_w + (2 * bleed), trim_h + (2 * bleed)
     out = io.BytesIO()
     c = canvas.Canvas(out, pagesize=(page_w, page_h))
     c.setTitle(title or "Cover")

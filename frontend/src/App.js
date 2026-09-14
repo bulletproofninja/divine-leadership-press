@@ -14,6 +14,7 @@ import AdminCommissionsPage from './pages/AdminCommissionsPage';
 import AffiliateConnectReturn from './pages/AffiliateConnectReturn';
 import SettingsPage from './pages/SettingsPage';
 import ResetPasswordPage from './pages/ResetPasswordPage';
+import PublishingCenterPage from './pages/PublishingCenterPage';
 import { Toaster } from './components/ui/sonner';
 
 function App() {
@@ -166,6 +167,10 @@ function App() {
                 <Navigate to="/" replace />
               )
             }
+          />
+          <Route
+            path="/publishing"
+            element={user ? <PublishingCenterPage /> : <Navigate to="/" replace />}
           />
           <Route
             path="/settings"
