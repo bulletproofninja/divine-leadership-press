@@ -36,6 +36,17 @@ A book publishing / writing application that allows users to upload a Word doc, 
 - [ ] **External blocker:** verify `divinepublisher.com` at https://resend.com/domains before normal emails can send from `security@divinepublisher.com`.
 - [ ] GitHub history may retain the now-invalid historical credential even though current files are clean. Purge affected historical commits through GitHub's secret-removal workflow after saving this secure checkpoint.
 
+## Lulu Production Credential Vault (2026-09-15)
+- [x] Added a **super-admin-only Lulu Direct** panel to Settings with Production selected by default, optional Sandbox switching, client key/secret fields, and production charge warning.
+- [x] Added encrypted credential persistence using a Fernet key stored only in ignored runtime configuration. MongoDB stores ciphertext and a masked client-key hint; plaintext/ciphertext are never returned to the browser.
+- [x] Added owner-only APIs: `GET/PUT/DELETE /api/admin/integrations/lulu` and `POST /api/admin/integrations/lulu/test`.
+- [x] Added real Lulu OAuth `client_credentials` connectivity testing using HTTP Basic authentication, bounded timeouts, environment-based URLs, and safe non-leaky errors.
+- [x] Replacing credentials updates one unique provider/owner row; clear requires explicit confirmation in the UI.
+- [x] Fixed asynchronous status loading so a fast Sandbox selection cannot be overwritten by the initial Production response; selector exposes accessible active state.
+- [x] Verification: 18/18 final Lulu/auth/storage regressions passed, frontend production build passed, desktop/mobile overflow checks passed, and ignored-secret scan passed.
+- [ ] **User action:** enter the real Lulu production client key/secret in Settings → Lulu Direct, save, then click **Test connection**.
+- [ ] **Not yet implemented:** real Lulu cost calculation, file-validation handoff, print-job submission, status tracking, and webhooks. The pre-existing Lulu publish action remains **MOCKED** until this next phase.
+
 ## Implemented (2026-09-13) — PRIVATE FILE & MEDIA STORAGE
 - [x] Extended Emergent Object Storage to retain original `.docx` / `.txt` manuscript uploads, generated print PDFs, ePub files, cover PDFs, OpenAI/ElevenLabs audiobooks, and per-chapter audiobook ZIPs.
 - [x] Added MongoDB `document_files` registry with owner/document scope, canonical storage paths, MIME types, sizes, variants, timestamps, and soft-delete status.
@@ -226,6 +237,7 @@ A book publishing / writing application that allows users to upload a Word doc, 
 ├── backend/
 │   ├── server.py          # FastAPI app: auth, documents, upload, export, AI, integrations
 │   ├── auth_security.py   # Password policy, reset-token hashing, Resend delivery
+│   ├── lulu_integration.py # Encrypted Lulu credentials + OAuth connectivity
 │   ├── private_file_storage.py # Private manuscript/export/media object-storage helpers
 │   ├── exporters.py       # KDP_TRIM_SIZES, docx_to_html, generate_pdf, generate_epub
 │   ├── ai_editor.py       # Claude Sonnet 4.5 editorial tools (5 endpoints)
@@ -235,6 +247,7 @@ A book publishing / writing application that allows users to upload a Word doc, 
 ├── frontend/src/pages/
 │   ├── LandingPage.js
 │   ├── ResetPasswordPage.js # Public single-use password reset screen
+│   ├── SettingsPage.js    # Passwords, BYO AI keys, Lulu Direct credentials
 │   ├── Dashboard.js       # upload accepts .docx/.txt/.pages
 │   └── EditorPage.js      # blob-download export, trim-size selector
 ```
@@ -243,6 +256,8 @@ A book publishing / writing application that allows users to upload a Word doc, 
 - `POST /api/auth/register | /login | /logout | GET /api/auth/me`
 - `POST /api/auth/forgot-password | /reset-password`
 - `PUT /api/auth/change-password`
+- `GET/PUT/DELETE /api/admin/integrations/lulu`
+- `POST /api/admin/integrations/lulu/test`
 - `GET|POST|PUT|DELETE /api/documents[/{id}]`
 - `POST /api/documents/upload` (.docx, .txt; .pages → 400 with guidance)
 - `GET /api/documents/{id}/files` → owner-scoped private file registry
@@ -256,6 +271,7 @@ A book publishing / writing application that allows users to upload a Word doc, 
 - `POST /api/integrations/{kdp|lulu}` (preparation-only, not real API hooks)
 
 ## Backlog (P1 / P2)
+- P0: Connect the saved Lulu credentials to real cost calculation, file validation, print-job submission, status polling, and signed webhooks.
 - P1: Refactor `server.py` (now ~2200 lines) into routers/ (auth, documents, billing, audio, admin)
 - P1: Refactor EditorPage.js into smaller components (still ~2500 lines)
 - P1: Real Stripe **Connect (Express)** onboarding so super-admin can auto-pay affiliates instead of manual mark-paid — requires owner's live Stripe account.
@@ -267,7 +283,6 @@ A book publishing / writing application that allows users to upload a Word doc, 
 - P2: Background-queue the per-chapter audiobook export for books >5 chapters (currently sequential within the request).
 - P2: Apply selected style template to PDF/ePub output (currently uses serif default)
 - P2: Extend Format Preview text mapping to cover all 12 KDP trim keys
-- P2: Replace `jwt.JWTError` with `jwt.PyJWTError` (PyJWT 2.x hardening)
 - P2: Add `DialogDescription` to dialogs to silence a11y warnings
 
 ## Test Credentials

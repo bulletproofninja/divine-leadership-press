@@ -10,7 +10,7 @@ import logging
 import re
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict, EmailStr
-from typing import List, Optional
+from typing import List, Literal, Optional
 import uuid
 from datetime import datetime, timezone, timedelta
 import bcrypt
@@ -107,6 +107,13 @@ from auth_security import (
     send_password_reset_email,
     utc_now,
     validate_new_password,
+)
+from lulu_integration import (
+    LuluIntegrationError,
+    credential_hint,
+    decrypt_credential,
+    encrypt_credential,
+    verify_lulu_credentials,
 )
 from transcription import transcribe_audio
 from image_to_pdf import image_to_pdf
@@ -209,6 +216,27 @@ class ChangePasswordRequest(BaseModel):
 
 
 class AuthMessageResponse(BaseModel):
+    message: str
+
+
+class LuluCredentialsUpdate(BaseModel):
+    environment: Literal["sandbox", "production"] = "production"
+    client_key: str = Field(min_length=4, max_length=500)
+    client_secret: str = Field(min_length=8, max_length=1000)
+
+
+class LuluCredentialsStatus(BaseModel):
+    configured: bool
+    environment: Literal["sandbox", "production"]
+    client_key_hint: Optional[str] = None
+    connection_status: str = "not_tested"
+    updated_at: Optional[datetime] = None
+    last_checked_at: Optional[datetime] = None
+
+
+class LuluConnectionResponse(BaseModel):
+    connected: bool
+    environment: Literal["sandbox", "production"]
     message: str
 
 class UserResponse(BaseModel):
@@ -636,7 +664,7 @@ async def get_current_user(
             raise HTTPException(status_code=401, detail="Invalid token")
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
-    except jwt.JWTError:
+    except jwt.exceptions.PyJWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
     
     user_doc = await db.users.find_one({"id": user_id}, {"_id": 0})
@@ -967,6 +995,114 @@ async def _load_affiliate_settings() -> dict:
 def _require_super_admin(current_user: User):
     if not current_user.is_super_admin:
         raise HTTPException(status_code=403, detail="Owner / super-admin only.")
+
+
+def _lulu_status(doc: Optional[dict]) -> LuluCredentialsStatus:
+    if not doc:
+        return LuluCredentialsStatus(configured=False, environment="production")
+    return LuluCredentialsStatus(
+        configured=True,
+        environment=doc.get("environment") or "production",
+        client_key_hint=doc.get("client_key_hint"),
+        connection_status=doc.get("connection_status") or "not_tested",
+        updated_at=doc.get("updated_at"),
+        last_checked_at=doc.get("last_checked_at"),
+    )
+
+
+@api_router.get("/admin/integrations/lulu", response_model=LuluCredentialsStatus)
+async def get_lulu_credentials_status(current_user: User = Depends(get_current_user)):
+    _require_super_admin(current_user)
+    doc = await db.integration_credentials.find_one(
+        {"provider": "lulu", "owner_id": current_user.id},
+        {"_id": 0, "client_key_encrypted": 0, "client_secret_encrypted": 0},
+    )
+    return _lulu_status(doc)
+
+
+@api_router.put("/admin/integrations/lulu", response_model=LuluCredentialsStatus)
+async def save_lulu_credentials(
+    payload: LuluCredentialsUpdate,
+    current_user: User = Depends(get_current_user),
+):
+    _require_super_admin(current_user)
+    client_key = payload.client_key.strip()
+    client_secret = payload.client_secret.strip()
+    if len(client_key) < 4 or len(client_secret) < 8:
+        raise HTTPException(status_code=400, detail="Enter a valid Lulu client key and client secret.")
+    now = datetime.now(timezone.utc).isoformat()
+    await db.integration_credentials.update_one(
+        {"provider": "lulu", "owner_id": current_user.id},
+        {
+            "$set": {
+                "provider": "lulu",
+                "owner_id": current_user.id,
+                "environment": payload.environment,
+                "client_key_encrypted": encrypt_credential(client_key),
+                "client_secret_encrypted": encrypt_credential(client_secret),
+                "client_key_hint": credential_hint(client_key),
+                "connection_status": "not_tested",
+                "updated_at": now,
+            },
+            "$unset": {"last_checked_at": "", "last_connection_error": ""},
+        },
+        upsert=True,
+    )
+    doc = await db.integration_credentials.find_one(
+        {"provider": "lulu", "owner_id": current_user.id},
+        {"_id": 0, "client_key_encrypted": 0, "client_secret_encrypted": 0},
+    )
+    return _lulu_status(doc)
+
+
+@api_router.delete("/admin/integrations/lulu", response_model=LuluCredentialsStatus)
+async def clear_lulu_credentials(current_user: User = Depends(get_current_user)):
+    _require_super_admin(current_user)
+    await db.integration_credentials.delete_one(
+        {"provider": "lulu", "owner_id": current_user.id}
+    )
+    return _lulu_status(None)
+
+
+@api_router.post("/admin/integrations/lulu/test", response_model=LuluConnectionResponse)
+async def test_lulu_credentials(current_user: User = Depends(get_current_user)):
+    _require_super_admin(current_user)
+    doc = await db.integration_credentials.find_one(
+        {"provider": "lulu", "owner_id": current_user.id}, {"_id": 0}
+    )
+    if not doc:
+        raise HTTPException(status_code=400, detail="Save Lulu credentials before testing.")
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        result = await verify_lulu_credentials(
+            environment=doc.get("environment") or "production",
+            client_key=decrypt_credential(doc["client_key_encrypted"]),
+            client_secret=decrypt_credential(doc["client_secret_encrypted"]),
+        )
+    except LuluIntegrationError as exc:
+        await db.integration_credentials.update_one(
+            {"provider": "lulu", "owner_id": current_user.id},
+            {
+                "$set": {
+                    "connection_status": "error",
+                    "last_checked_at": now,
+                    "last_connection_error": str(exc),
+                }
+            },
+        )
+        raise HTTPException(status_code=400, detail=str(exc))
+    await db.integration_credentials.update_one(
+        {"provider": "lulu", "owner_id": current_user.id},
+        {
+            "$set": {"connection_status": "connected", "last_checked_at": now},
+            "$unset": {"last_connection_error": ""},
+        },
+    )
+    return LuluConnectionResponse(
+        connected=True,
+        environment=result["environment"],
+        message="Lulu credentials connected successfully.",
+    )
 
 
 @api_router.get("/affiliate/settings")
@@ -3858,6 +3994,9 @@ async def _init_services_on_startup():
     await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=0)
     await db.auth_reset_requests.create_index("expires_at", expireAfterSeconds=0)
     await db.auth_login_failures.create_index("expires_at", expireAfterSeconds=0)
+    await db.integration_credentials.create_index(
+        [("provider", 1), ("owner_id", 1)], unique=True
+    )
     try:
         init_object_storage()
     except Exception as exc:

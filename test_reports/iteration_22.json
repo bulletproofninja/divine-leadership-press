@@ -1,0 +1,63 @@
+{
+  "summary": "Executed backend + frontend validation for Lulu super-admin credential panel, encrypted persistence, safe OAuth connection handling, auth hardening regression, and private-storage regression. Backend suites passed (18/18). UI found one reproducible defect: sandbox environment toggle does not switch from production, so warning text and effective saved environment remain production-only through the panel.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "LuluIntegrationCard",
+        "issue": "Sandbox environment button is not taking effect; warning banner remains production and production button stays active after clicking sandbox.",
+        "selector": "[data-testid='lulu-environment-sandbox'], [data-testid='lulu-environment-warning']",
+        "priority": "HIGH"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "Settings > Lulu Direct environment selection",
+        "issue": "UI cannot reliably switch to sandbox mode, which blocks intended environment selection behavior before save/test.",
+        "affected_selectors": [
+          "[data-testid='lulu-environment-sandbox']",
+          "[data-testid='lulu-environment-production']",
+          "[data-testid='lulu-environment-warning']"
+        ]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_lulu_credentials.py",
+    "/app/backend/tests/test_iter22_lulu_admin_security.py",
+    "/app/backend/tests/test_password_recovery.py",
+    "/app/backend/tests/test_private_file_storage.py",
+    "/app/test_reports/pytest/iter22_backend.xml"
+  ],
+  "action_items": [
+    "Fix Lulu environment toggle state update in Settings so sandbox selection visibly activates and updates warning text.",
+    "Re-test save path after sandbox selection to confirm PUT sends environment='sandbox' from UI.",
+    "After fix, rerun UI checks for both 1920x1080 and 390x844 to ensure no regression in overflow or control states."
+  ],
+  "critical_code_review_comments": [
+    "Lulu admin APIs enforce super-admin authorization (403 for regular users) and do not return plaintext or encrypted credential fields in status/save responses.",
+    "Credential persistence correctly uses encrypted fields and unique (provider, owner_id) semantics; overwrite behavior keeps a single row.",
+    "Malformed JWT handling now returns HTTP 401 (no server exception) in exercised regression tests.",
+    "INTEGRATION_CREDENTIALS_KEY is read from runtime env only; .env patterns are ignored by repository-level .gitignore.",
+    "Note: Lulu print-job submission remains outside this scope and is still MOCKED in existing pre-task flow as stated in handoff context."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_lulu_credentials.py",
+    "/app/backend/tests/test_iter22_lulu_admin_security.py",
+    "/app/backend/tests/test_password_recovery.py",
+    "/app/test_reports/iteration_22.json"
+  ],
+  "success_rate": {
+    "backend": "100% (18/18)",
+    "frontend": "93% (core Lulu settings/auth visibility checks passed except sandbox toggle)"
+  },
+  "seed_data_creation": "Created disposable TEST_iter22_lulu_* and TEST_iter22_regular_* accounts; cleaned backend test users via fixtures.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend regression and Lulu credential security checks are green; primary remaining issue is frontend sandbox selector behavior. Reproduce by super-admin login -> /settings -> click [data-testid='lulu-environment-sandbox']; warning remains production and production button remains selected.",
+  "rca of the issue": "RCA (UI): Environment selector click does not transition component state to sandbox in repeated runs. Observable symptoms: warning copy remains production, production button remains active class, and sandbox never reflects selected state. Likely front-end state wiring/event handling issue within LuluIntegrationCard environment buttons path; backend API itself supports sandbox when payload is sent directly."
+}

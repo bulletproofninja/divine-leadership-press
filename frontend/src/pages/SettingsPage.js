@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { motion } from 'framer-motion';
+import { LuluIntegrationCard } from '../components/LuluIntegrationCard';
 import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
 import { Input } from '../components/ui/input';
@@ -333,6 +334,8 @@ export default function SettingsPage({ user, setUser }) {
               </Button>
             </form>
           </Card>
+
+          {me?.is_super_admin && <LuluIntegrationCard />}
 
           <h2 className="text-2xl font-heading font-semibold mb-2">AI provider keys</h2>
           <p className="text-sm text-muted-foreground font-body mb-8 max-w-2xl">

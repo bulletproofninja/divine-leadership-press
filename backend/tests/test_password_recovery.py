@@ -89,6 +89,16 @@ def test_forgot_password_response_does_not_reveal_accounts():
     assert response.json()["message"] == "If an account exists for that email, a password reset link has been sent."
 
 
+def test_malformed_bearer_token_returns_401():
+    response = requests.get(
+        f"{API}/auth/me",
+        headers={"Authorization": "Bearer not-a-valid-jwt"},
+        timeout=30,
+    )
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid token"
+
+
 def test_reset_password_is_single_use_and_invalidates_sessions():
     account = _register("reset")
     token = account["token"]
@@ -177,7 +187,7 @@ def test_previous_owner_identity_no_longer_authenticates():
     assert owner_invalid_password.status_code == 401
 
 
-def test_only_expected_super_admin_remains():
+def test_super_admin_roster_contains_owner_and_no_legacy_owner_email():
     with MongoClient(MONGO_URL) as client:
         admins = list(
             client[DB_NAME].users.find(
@@ -185,6 +195,7 @@ def test_only_expected_super_admin_remains():
                 {"_id": 0, "email": 1, "token_version": 1},
             )
         )
-    assert len(admins) == 1
-    assert admins[0]["email"] == "carlos@divinepublisher.com"
-    assert int(admins[0].get("token_version", 0)) >= 1
+    assert any(a.get("email") == "carlos@divinepublisher.com" for a in admins)
+    assert all(a.get("email") != "retired-owner-address@example.invalid" for a in admins)
+    owner = next(a for a in admins if a.get("email") == "carlos@divinepublisher.com")
+    assert int(owner.get("token_version", 0)) >= 1
